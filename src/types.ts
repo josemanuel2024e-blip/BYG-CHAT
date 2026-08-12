@@ -57,6 +57,8 @@ export interface Room {
   avatar?: string;
 }
 
+export type SignalQuality = 'stable' | 'weak' | 'connecting' | 'none';
+
 export interface CallState {
   active: boolean;
   callId: string | null;
@@ -69,6 +71,7 @@ export interface CallState {
   startTime: number | null;
   audioLevel: number;
   isVoiceOnly: boolean;
+  signalQuality?: SignalQuality;
 }
 
 export interface KeyVaultInfo {

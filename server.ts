@@ -218,6 +218,25 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
 
+        case 'message:read': {
+          const { roomId } = message.payload;
+          const outbound = JSON.stringify({
+            type: 'message:read',
+            payload: message.payload,
+            senderId: currentUserId,
+          });
+
+          const targetRoom = roomsStore.get(roomId);
+          connectedUsers.forEach((client, uid) => {
+            if (uid !== currentUserId && client.ws.readyState === WebSocket.OPEN) {
+              if (!targetRoom || targetRoom.participants.includes(uid) || targetRoom.type === 'group') {
+                client.ws.send(outbound);
+              }
+            }
+          });
+          break;
+        }
+
         case 'device:link': {
           const { uid, deviceName } = message.payload;
           console.log(`[AUTH] Linking new device "${deviceName}" for user ${uid}`);

@@ -25,6 +25,7 @@ import {
   collection,
   doc,
   deleteDoc,
+  updateDoc,
   getDoc,
   setDoc,
   addDoc,
@@ -94,6 +95,7 @@ export default function App() {
     startTime: null,
     audioLevel: 0,
     isVoiceOnly: true,
+    signalQuality: 'none',
   });
 
   // Monochrome mode state & keyboard shortcut (Shift + Q + Z)
@@ -482,11 +484,23 @@ export default function App() {
             r.id === activeRoomId ? { ...r, lastMessage: lastMsg } : r
           )
         );
+
+        // Mark as read if user is in the room and there are new messages
+        if (lastMsg.senderId !== currentUser.id) {
+          handleMarkAsRead(activeRoomId);
+        }
       }
     });
 
     return () => unsubscribe();
   }, [currentUser?.id, activeRoomId]);
+
+  // Handle Mark as Read on Room Entry
+  useEffect(() => {
+    if (activeRoomId && currentUser) {
+      handleMarkAsRead(activeRoomId);
+    }
+  }, [activeRoomId, currentUser?.id]);
 
   // 5. Setup WebSocket connection for signaling/presence
   useEffect(() => {
@@ -533,6 +547,7 @@ export default function App() {
               startTime: null,
               audioLevel: 0,
               isVoiceOnly: true,
+              signalQuality: 'connecting',
             });
             break;
           }
@@ -568,6 +583,7 @@ export default function App() {
                 startTime: null,
                 audioLevel: 0,
                 isVoiceOnly: true,
+                signalQuality: 'none',
               });
             }, 800);
             break;
@@ -592,6 +608,19 @@ export default function App() {
               });
               deleteMessageLocally(messageId);
             }
+            break;
+          }
+
+          case 'message:read': {
+            const { roomId, userId } = data.payload;
+            // Update local state to reflect read status
+            setRoomMessagesMap(prev => {
+              const msgs = prev[roomId] || [];
+              const updatedMsgs = msgs.map(m => 
+                (m.senderId !== userId) ? { ...m, status: 'read' as const } : m
+              );
+              return { ...prev, [roomId]: updatedMsgs };
+            });
             break;
           }
 
@@ -738,6 +767,39 @@ export default function App() {
           payload: { messageId, roomId: activeRoomId },
         })
       );
+    }
+  };
+
+  const handleMarkAsRead = async (roomId: string) => {
+    if (!currentUser || !roomId) return;
+
+    try {
+      // 1. Update Firestore
+      const q = query(
+        collection(db, 'messages'),
+        where('roomId', '==', roomId),
+        where('senderId', '!=', currentUser.id),
+        where('status', '==', 'sent')
+      );
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) return;
+
+      const batch = snapshot.docs.map(docSnap => {
+        const docRef = doc(db, 'messages', docSnap.id);
+        return updateDoc(docRef, { status: 'read' });
+      });
+      await Promise.all(batch);
+
+      // 2. Notify via WebSocket
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'message:read',
+          payload: { roomId, userId: currentUser.id }
+        }));
+      }
+    } catch (err) {
+      console.error('Error marking messages as read:', err);
     }
   };
 
@@ -912,6 +974,7 @@ export default function App() {
       startTime: null,
       audioLevel: 0,
       isVoiceOnly: true,
+      signalQuality: 'connecting',
     });
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -972,6 +1035,7 @@ export default function App() {
         startTime: null,
         audioLevel: 0,
         isVoiceOnly: true,
+        signalQuality: 'none',
       });
     }, 500);
   };
@@ -1002,6 +1066,7 @@ export default function App() {
         startTime: null,
         audioLevel: 0,
         isVoiceOnly: true,
+        signalQuality: 'none',
       });
     }, 500);
   };
@@ -1027,6 +1092,15 @@ export default function App() {
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
       console.log(`ICE Connection State: ${state}`);
+
+      let quality: any = 'none';
+      if (state === 'checking' || state === 'new') quality = 'connecting';
+      if (state === 'connected' || state === 'completed') quality = 'stable';
+      if (state === 'disconnected') quality = 'weak';
+      if (state === 'failed' || state === 'closed') quality = 'none';
+
+      setCallState(prev => ({ ...prev, signalQuality: quality }));
+
       if (state === 'failed' || state === 'disconnected') {
         if (isInitiator) {
           console.warn('ICE Connection failed, triggering restart...');
@@ -1038,6 +1112,15 @@ export default function App() {
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
       console.log(`Peer Connection State: ${state}`);
+
+      let quality: any = 'none';
+      if (state === 'connecting') quality = 'connecting';
+      if (state === 'connected') quality = 'stable';
+      if (state === 'failed' || state === 'closed') quality = 'none';
+      if (state === 'disconnected') quality = 'weak';
+
+      setCallState(prev => ({ ...prev, signalQuality: quality }));
+
       if (state === 'failed') {
         if (isInitiator) {
           triggerICERestart(targetId);
@@ -1402,6 +1485,7 @@ export default function App() {
             room={currentActiveRoom}
             messages={currentMessages}
             currentUser={currentUser}
+            callState={callState}
             onSendMessage={handleSendMessage}
             onSendVoiceNote={handleSendVoiceNote}
             onStartVoiceCall={handleStartVoiceCall}

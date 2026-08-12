@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Phone, Shield, Lock, Send, Paperclip, Mic, Play, Pause, FileText, CheckCheck, Eye, EyeOff, Info, ChevronLeft, Hash, Image, Video, Music, File, Trash2 } from 'lucide-react';
-import { Message, Room, Attachment, User, AttachmentType } from '../types';
+import { Phone, Shield, Lock, Send, Paperclip, Mic, Play, Pause, FileText, CheckCheck, Eye, EyeOff, Info, ChevronLeft, Hash, Image, Video, Music, File, Trash2, SignalHigh, SignalMedium, SignalLow } from 'lucide-react';
+import { Message, Room, Attachment, User, AttachmentType, CallState } from '../types';
 import { VoiceRecorder } from './VoiceRecorder';
 import { MediaUploader } from './MediaUploader';
 import { Avatar } from './Avatar';
@@ -11,6 +11,7 @@ interface ChatAreaProps {
   room: Room | null;
   messages: Message[];
   currentUser: User;
+  callState: CallState;
   onSendMessage: (text: string, attachment?: Attachment) => void;
   onSendVoiceNote: (audioBlob: Blob, duration: number) => void;
   onStartVoiceCall: () => void;
@@ -29,6 +30,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   room,
   messages,
   currentUser,
+  callState,
   onSendMessage,
   onSendVoiceNote,
   onStartVoiceCall,
@@ -245,6 +247,39 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
       </div>
 
+      {/* Connection Quality Indicator for active calls in the room */}
+      {callState.active && callState.status === 'connected' && (
+        <div className="mx-4 mt-2 flex items-center justify-between px-4 py-2 bg-blue-600/10 border border-blue-500/20 rounded-2xl animate-in slide-in-from-top-2 duration-300 z-10">
+          <div className="flex items-center space-x-2">
+            <div className="w-2 h-2 rounded-full bg-green-400 animate-ping" />
+            <span className="text-xs font-bold text-blue-400">Llamada en curso</span>
+          </div>
+          
+          <div className="flex items-center space-x-3">
+             <div className="flex items-center space-x-1.5">
+              {callState.signalQuality === 'stable' && (
+                <>
+                  <SignalHigh className="w-3.5 h-3.5 text-green-400" />
+                  <span className="text-[10px] font-bold text-green-400 uppercase">Estable</span>
+                </>
+              )}
+              {callState.signalQuality === 'weak' && (
+                <>
+                  <SignalLow className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                  <span className="text-[10px] font-bold text-amber-400 uppercase">Débil</span>
+                </>
+              )}
+              {callState.signalQuality === 'connecting' && (
+                <>
+                  <div className="w-2 h-2 border border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Conectando...</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Messages Stream */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
         {messages.map((msg) => {
@@ -337,7 +372,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       minute: '2-digit',
                     })}
                   </span>
-                  {isMe && <CheckCheck className="w-3.5 h-3.5 text-blue-200 inline" />}
+                  {isMe && (
+                    <CheckCheck 
+                      className={`w-3.5 h-3.5 inline ${msg.status === 'read' ? 'text-blue-400' : 'text-zinc-500'}`} 
+                    />
+                  )}
                   {isMe && onDeleteMessage && (
                     <button
                       onClick={() => {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PhoneOff, Mic, MicOff, Volume2, VolumeX, Activity, Hash, PhoneCall } from 'lucide-react';
+import { PhoneOff, Mic, MicOff, Volume2, VolumeX, Activity, Hash, PhoneCall, SignalHigh, SignalMedium, SignalLow } from 'lucide-react';
 import { CallState } from '../types';
 import { Avatar } from './Avatar';
 import { formatXaonDisplay } from '../utils/xaon';
@@ -128,7 +128,7 @@ export const CallModal: React.FC<CallModalProps> = ({
           <span>ID XAON: {formatXaonDisplay(undefined, callState.peerId || callState.peerName)}</span>
         </div>
 
-        <div className="text-sm font-medium text-zinc-400 mb-6 flex items-center justify-center space-x-2">
+        <div className="text-sm font-medium text-zinc-400 mb-2 flex flex-col items-center justify-center space-y-2">
           {callState.status === 'calling' && (
             <span className="text-amber-400 animate-pulse">Llamando...</span>
           )}
@@ -136,9 +136,39 @@ export const CallModal: React.FC<CallModalProps> = ({
             <span className="text-blue-400 animate-bounce">Llamada entrante de voz</span>
           )}
           {callState.status === 'connected' && (
-            <div className="flex items-center space-x-2 text-green-400 font-mono font-bold">
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-ping" />
-              <span>{formatDuration(duration)}</span>
+            <div className="flex flex-col items-center space-y-2">
+              <div className="flex items-center space-x-2 text-green-400 font-mono font-bold">
+                <span className="w-2 h-2 rounded-full bg-green-400 animate-ping" />
+                <span>{formatDuration(duration)}</span>
+              </div>
+              
+              {/* Connection Quality Indicator */}
+              <div className="flex items-center space-x-2 px-3 py-1 bg-zinc-800/50 rounded-full border border-zinc-700/50">
+                {callState.signalQuality === 'stable' && (
+                  <>
+                    <SignalHigh className="w-3.5 h-3.5 text-green-400" />
+                    <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">Conexión Estable</span>
+                  </>
+                )}
+                {callState.signalQuality === 'weak' && (
+                  <>
+                    <SignalLow className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                    <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Señal Débil</span>
+                  </>
+                )}
+                {callState.signalQuality === 'connecting' && (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
+                    <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Optimizando Enlace...</span>
+                  </>
+                )}
+                {callState.signalQuality === 'none' && (
+                  <>
+                    <SignalLow className="w-3.5 h-3.5 text-rose-400 animate-bounce" />
+                    <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">Sin Señal</span>
+                  </>
+                )}
+              </div>
             </div>
           )}
           {callState.status === 'ended' && (
