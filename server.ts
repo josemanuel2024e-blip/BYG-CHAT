@@ -20,6 +20,7 @@ interface StoredUser {
   status: 'online' | 'offline';
   bio: string;
   fingerprint: string;
+  xaonId: string;
   createdAt: number;
 }
 
@@ -61,6 +62,7 @@ const seedUsers: StoredUser[] = [
     status: 'online',
     bio: 'Desarrolladora Web & Apasionada de la Criptografía E2EE',
     fingerprint: '4F12:88AA:99CD:33FE:1100:5544',
+    xaonId: 'MA12-RD88',
     createdAt: Date.now() - 100000,
   },
   {
@@ -72,6 +74,7 @@ const seedUsers: StoredUser[] = [
     status: 'online',
     bio: 'Seguridad en Redes y Sistemas Distribuidos',
     fingerprint: '8801:BB44:2299:1100:8833:9911',
+    xaonId: 'CA45-MZ99',
     createdAt: Date.now() - 80000,
   },
 ];
@@ -102,6 +105,7 @@ function broadcastPresence() {
     avatar: u.avatar,
     status: connectedUsers.has(u.id) ? 'online' : 'offline',
     fingerprint: u.fingerprint,
+    xaonId: u.xaonId,
     bio: u.bio,
   }));
 
@@ -224,6 +228,12 @@ app.post('/api/auth/register', (req, res) => {
   const hexRandom = Math.random().toString(36).substring(2, 10).toUpperCase();
   const fingerprint = `BYG:${hexRandom.slice(0, 4)}:${hexRandom.slice(4)}:2026:SAFE`;
 
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const digits = '0123456789';
+  const getL = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
+  const getD = (n: number) => Array.from({ length: n }, () => digits[Math.floor(Math.random() * digits.length)]).join('');
+  const xaonId = `${getL(2)}${getD(2)}-${getL(2)}${getD(2)}`;
+
   const newUser: StoredUser = {
     id: userId,
     username: cleanUsername,
@@ -233,8 +243,9 @@ app.post('/api/auth/register', (req, res) => {
       avatar ||
       'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
     status: 'online',
-    bio: bio || 'Usuario de BYG CHAT Cifrado',
+    bio: bio || 'Usuario de BYG CHAT',
     fingerprint,
+    xaonId,
     createdAt: Date.now(),
   };
 
@@ -293,6 +304,31 @@ app.get('/api/auth/me', (req, res) => {
 
   const { passwordHash, ...userPublic } = user;
   res.json(userPublic);
+});
+
+// Update User Profile Endpoint
+app.put('/api/users/profile', (req, res) => {
+  const { userId, name, avatar, bio, status } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ message: 'ID de usuario requerido.' });
+  }
+
+  const user = usersStore.get(userId);
+  if (user) {
+    if (name) user.name = name;
+    if (avatar) user.avatar = avatar;
+    if (bio !== undefined) user.bio = bio;
+    if (status) user.status = status;
+
+    usersStore.set(userId, user);
+    broadcastPresence();
+
+    const { passwordHash, ...userPublic } = user;
+    return res.json({ success: true, user: userPublic });
+  }
+
+  res.status(404).json({ message: 'Usuario no encontrado.' });
 });
 
 app.get('/api/users', (req, res) => {

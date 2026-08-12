@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Shield, Lock, Key, Copy, Check, RefreshCw, X, FileCode, CheckCircle2 } from 'lucide-react';
+import { Shield, Lock, Key, Copy, Check, RefreshCw, X, FileCode, CheckCircle2, Database } from 'lucide-react';
 import { KeyVaultInfo } from '../types';
+import { SUPABASE_SQL_SCHEMA, isSupabaseConfigured } from '../lib/supabase';
 
 interface SecurityModalProps {
   isOpen: boolean;
@@ -129,6 +130,39 @@ export const SecurityModal: React.FC<SecurityModalProps> = ({
                 ⚠️ La huella no coincide con la llave pública actual.
               </div>
             )}
+          </div>
+
+          {/* Supabase Database Info & SQL Schema */}
+          <div className="space-y-2 p-4 bg-[#161616] border border-zinc-800 rounded-2xl">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center space-x-1.5">
+                <Database className="w-4 h-4" />
+                <span>Base de Datos Supabase</span>
+              </label>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${isSupabaseConfigured ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-zinc-800 text-zinc-400'}`}>
+                {isSupabaseConfigured ? '🟢 Conectado' : '⚪ Esperando URL / Key en Secrets'}
+              </span>
+            </div>
+
+            <p className="text-xs text-zinc-400">
+              Usa este script SQL en el SQL Editor de tu proyecto Supabase para crear las tablas <code className="text-emerald-400 font-mono">users</code>, <code className="text-emerald-400 font-mono">rooms</code> y <code className="text-emerald-400 font-mono">messages</code>:
+            </p>
+
+            <div className="relative">
+              <pre className="p-3 bg-[#0a0a0a] border border-zinc-800 rounded-xl text-[10px] font-mono text-emerald-300/80 overflow-x-auto whitespace-pre-wrap max-h-36">
+                {SUPABASE_SQL_SCHEMA}
+              </pre>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(SUPABASE_SQL_SCHEMA);
+                  alert('¡Script SQL de Supabase copiado al portapapeles!');
+                }}
+                className="absolute top-2 right-2 p-1.5 bg-[#222] hover:bg-[#333] text-zinc-300 rounded-lg text-[10px] font-bold flex items-center space-x-1 border border-zinc-700"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copiar SQL</span>
+              </button>
+            </div>
           </div>
 
           {/* Public Key Pem View */}

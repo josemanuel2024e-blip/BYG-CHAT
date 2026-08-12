@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Room, Message, CallState, KeyVaultInfo, Attachment } from './types';
+import { User, Room, Message, CallState, KeyVaultInfo, Attachment, UserStatus } from './types';
 import { getUserKeyVault, encryptText, decryptText, encryptFile } from './utils/crypto';
+import { formatXaonDisplay } from './utils/xaon';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
@@ -10,6 +11,23 @@ import { MediaViewer } from './components/MediaViewer';
 import { NewGroupModal } from './components/NewGroupModal';
 import { AuthModal } from './components/AuthModal';
 import { UserDirectoryModal } from './components/UserDirectoryModal';
+import { ProfileModal } from './components/ProfileModal';
+import {
+  auth,
+  db,
+  onAuthStateChanged,
+  signOut,
+  collection,
+  doc,
+  getDoc,
+  setDoc,
+  addDoc,
+  onSnapshot,
+  query,
+  where,
+  getDocs,
+} from './lib/firebase';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -26,7 +44,11 @@ export default function App() {
   const [showSecurityModal, setShowSecurityModal] = useState<boolean>(false);
   const [showNewGroupModal, setShowNewGroupModal] = useState<boolean>(false);
   const [showUserDirectory, setShowUserDirectory] = useState<boolean>(false);
+  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [profileTargetUser, setProfileTargetUser] = useState<User | null>(null);
   const [viewingAttachment, setViewingAttachment] = useState<Attachment | null>(null);
+
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Call state
   const [callState, setCallState] = useState<CallState>({
@@ -83,21 +105,67 @@ export default function App() {
     };
   }, []);
 
-  // 1. Check local session on startup
+  // 1. Check Firebase Auth session or localStorage session on startup
   useEffect(() => {
-    const savedToken = localStorage.getItem('byg_chat_token');
-    const savedUserRaw = localStorage.getItem('byg_chat_user');
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        try {
+          const idToken = await fbUser.getIdToken();
+          setToken(idToken);
 
-    if (savedToken && savedUserRaw) {
-      try {
-        const parsedUser = JSON.parse(savedUserRaw);
-        setToken(savedToken);
-        setCurrentUser(parsedUser);
-      } catch (e) {
-        localStorage.removeItem('byg_chat_token');
-        localStorage.removeItem('byg_chat_user');
+          const userDocRef = doc(db, 'users', fbUser.uid);
+          const userSnap = await getDoc(userDocRef);
+
+          if (userSnap.exists()) {
+            const d = userSnap.data();
+            const u: User = {
+              id: fbUser.uid,
+              name: d.name || fbUser.displayName || 'Usuario BYG',
+              avatar: d.avatar || '😎',
+              status: 'online',
+              bio: d.bio || 'Usuario verificado de BYG CHAT',
+              xaonId: formatXaonDisplay(d.xaonId, fbUser.uid),
+              fingerprint: d.fingerprint || 'BYG:SAFE:2026:AUTH',
+            };
+            setCurrentUser(u);
+            localStorage.setItem('byg_chat_user', JSON.stringify(u));
+            localStorage.setItem('byg_chat_token', idToken);
+          } else {
+            const u: User = {
+              id: fbUser.uid,
+              name: fbUser.displayName || 'Usuario BYG',
+              avatar: '😎',
+              status: 'online',
+              bio: 'Usuario verificado de BYG CHAT',
+              xaonId: formatXaonDisplay(undefined, fbUser.uid),
+              fingerprint: 'BYG:SAFE:2026:AUTH',
+            };
+            setCurrentUser(u);
+          }
+        } catch (e) {
+          console.error('Error restoring session:', e);
+        }
+      } else {
+        const savedToken = localStorage.getItem('byg_chat_token');
+        const savedUserRaw = localStorage.getItem('byg_chat_user');
+        if (savedToken && savedUserRaw) {
+          try {
+            const parsedUser = JSON.parse(savedUserRaw);
+            parsedUser.xaonId = formatXaonDisplay(parsedUser.xaonId, parsedUser.id);
+            setToken(savedToken);
+            setCurrentUser(parsedUser);
+            return;
+          } catch (e) {
+            localStorage.removeItem('byg_chat_token');
+            localStorage.removeItem('byg_chat_user');
+          }
+        }
+        setCurrentUser(null);
+        setToken(null);
       }
-    }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // 2. Load E2EE Key Vault when logged in
@@ -110,30 +178,217 @@ export default function App() {
     }
   }, [currentUser?.id]);
 
-  // 3. Load Rooms for logged in user
-  const loadUserRooms = (usrId: string, tok?: string) => {
-    const queryToken = tok || token || '';
-    fetch(`/api/rooms?userId=${usrId}&token=${queryToken}`)
-      .then((res) => res.json())
-      .then((data: Room[]) => {
-        setRooms(data);
-        if (data.length > 0 && !activeRoomId) {
-          // Select first room on desktop by default
-          if (window.innerWidth >= 768) {
-            setActiveRoomId(data[0].id);
+  // 3. Real-time Rooms sync for logged in user (Supabase or Firestore)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    if (isSupabaseConfigured && supabase) {
+      const fetchSupabaseRooms = async () => {
+        const { data, error } = await supabase.from('rooms').select('*');
+        if (!error && data) {
+          const fetchedRooms: Room[] = data.map((r) => ({
+            id: r.id,
+            name: r.name || 'Canal Cifrado',
+            type: r.type || 'group',
+            participants: r.participants || [],
+            unreadCount: r.unread_count || 0,
+            isEncrypted: r.is_encrypted ?? true,
+            fingerprint: r.fingerprint || 'BYG:E2EE:SAFE',
+            avatar: r.avatar || '💬',
+          }));
+          const userRooms = fetchedRooms.filter(
+            (r) => r.participants.includes(currentUser.id) || r.type === 'group'
+          );
+          setRooms(userRooms);
+          if (userRooms.length > 0 && !activeRoomId && window.innerWidth >= 768) {
+            setActiveRoomId(userRooms[0].id);
           }
         }
-      })
-      .catch((err) => console.error('Failed to load user rooms:', err));
-  };
+      };
 
-  useEffect(() => {
-    if (currentUser) {
-      loadUserRooms(currentUser.id, token || '');
+      fetchSupabaseRooms();
+
+      const channel = supabase
+        .channel('public:rooms')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'rooms' },
+          () => {
+            fetchSupabaseRooms();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
     }
-  }, [currentUser?.id, token]);
 
-  // 4. Setup WebSocket connection for logged in user
+    // Listen to all rooms where user is participant or type is group (Firestore)
+    const roomsCol = collection(db, 'rooms');
+    const unsubscribe = onSnapshot(roomsCol, (snapshot) => {
+      const fetchedRooms: Room[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: data.id || d.id,
+          name: data.name || 'Canal Cifrado',
+          type: data.type || 'group',
+          participants: data.participants || [],
+          unreadCount: data.unreadCount || 0,
+          isEncrypted: data.isEncrypted ?? true,
+          fingerprint: data.fingerprint || 'BYG:E2EE:SAFE',
+          avatar: data.avatar || '💬',
+        };
+      });
+
+      const userRooms = fetchedRooms.filter(
+        (r) => r.participants.includes(currentUser.id) || r.type === 'group'
+      );
+
+      setRooms(userRooms);
+      if (userRooms.length > 0 && !activeRoomId) {
+        if (window.innerWidth >= 768) {
+          setActiveRoomId(userRooms[0].id);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.id]);
+
+  // 4. Real-time Messages sync for activeRoomId (Supabase or Firestore)
+  useEffect(() => {
+    if (!currentUser || !activeRoomId) return;
+
+    if (isSupabaseConfigured && supabase) {
+      const fetchSupabaseMessages = async () => {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('room_id', activeRoomId);
+
+        if (!error && data) {
+          const msgPromises = data.map(async (item) => {
+            let decryptedText = item.text || '';
+            if (item.encrypted_payload && item.encrypted_payload.ciphertext) {
+              try {
+                decryptedText = await decryptText(item.encrypted_payload, activeRoomId);
+              } catch (e) {
+                console.error('Decryption failed for msg:', item.id);
+              }
+            }
+
+            const msg: Message = {
+              id: item.id,
+              senderId: item.sender_id,
+              receiverId: item.room_id || activeRoomId,
+              text: decryptedText,
+              encryptedPayload: item.encrypted_payload,
+              timestamp: Number(item.timestamp) || Date.now(),
+              status: item.status || 'sent',
+              attachment: item.attachment,
+              isVoiceNote: item.is_voice_note,
+              audioDuration: item.audio_duration,
+            };
+            return msg;
+          });
+
+          const processedMsgs = await Promise.all(msgPromises);
+          processedMsgs.sort((a, b) => a.timestamp - b.timestamp);
+
+          setRoomMessagesMap((prev) => ({
+            ...prev,
+            [activeRoomId]: processedMsgs,
+          }));
+
+          if (processedMsgs.length > 0) {
+            const lastMsg = processedMsgs[processedMsgs.length - 1];
+            setRooms((prevRooms) =>
+              prevRooms.map((r) =>
+                r.id === activeRoomId ? { ...r, lastMessage: lastMsg } : r
+              )
+            );
+          }
+        }
+      };
+
+      fetchSupabaseMessages();
+
+      const channel = supabase
+        .channel(`public:messages:${activeRoomId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'messages',
+            filter: `room_id=eq.${activeRoomId}`,
+          },
+          () => {
+            fetchSupabaseMessages();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+
+    const messagesCol = collection(db, 'messages');
+    const q = query(messagesCol, where('roomId', '==', activeRoomId));
+
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      const msgPromises = snapshot.docs.map(async (docSnap) => {
+        const data = docSnap.data();
+        let decryptedText = data.text || '';
+
+        if (data.encryptedPayload && data.encryptedPayload.ciphertext) {
+          try {
+            decryptedText = await decryptText(data.encryptedPayload, activeRoomId);
+          } catch (e) {
+            console.error('Decryption failed for msg:', docSnap.id);
+          }
+        }
+
+        const msg: Message = {
+          id: data.id || docSnap.id,
+          senderId: data.senderId,
+          receiverId: data.roomId || activeRoomId,
+          text: decryptedText,
+          encryptedPayload: data.encryptedPayload,
+          timestamp: data.timestamp || Date.now(),
+          status: data.status || 'sent',
+          attachment: data.attachment,
+          isVoiceNote: data.isVoiceNote,
+          audioDuration: data.audioDuration,
+        };
+        return msg;
+      });
+
+      const processedMsgs = await Promise.all(msgPromises);
+      processedMsgs.sort((a, b) => a.timestamp - b.timestamp);
+
+      setRoomMessagesMap((prev) => ({
+        ...prev,
+        [activeRoomId]: processedMsgs,
+      }));
+
+      // Update last message in room list
+      if (processedMsgs.length > 0) {
+        const lastMsg = processedMsgs[processedMsgs.length - 1];
+        setRooms((prevRooms) =>
+          prevRooms.map((r) =>
+            r.id === activeRoomId ? { ...r, lastMessage: lastMsg } : r
+          )
+        );
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.id, activeRoomId]);
+
+  // 5. Setup WebSocket connection for signaling/presence
   useEffect(() => {
     if (!currentUser) return;
 
@@ -162,44 +417,6 @@ export default function App() {
           case 'presence:update':
             setOnlineUsers(data.onlineUsers || []);
             break;
-
-          case 'message:receive': {
-            const rawMsg: Message = data.payload;
-            const roomId = rawMsg.receiverId;
-
-            let decryptedText = rawMsg.text;
-            if (rawMsg.encryptedPayload && rawMsg.encryptedPayload.ciphertext) {
-              decryptedText = await decryptText(rawMsg.encryptedPayload, roomId);
-            }
-
-            const processedMsg: Message = {
-              ...rawMsg,
-              text: decryptedText,
-            };
-
-            setRoomMessagesMap((prev) => {
-              const currentList = prev[roomId] || [];
-              if (currentList.some((m) => m.id === processedMsg.id)) {
-                return prev;
-              }
-              return {
-                ...prev,
-                [roomId]: [...currentList, processedMsg],
-              };
-            });
-
-            setRooms((prevRooms) =>
-              prevRooms.map((r) =>
-                r.id === roomId
-                  ? {
-                      ...r,
-                      lastMessage: processedMsg,
-                    }
-                  : r
-              )
-            );
-            break;
-          }
 
           case 'call:initiate': {
             setCallState({
@@ -267,7 +484,12 @@ export default function App() {
   }, [currentUser?.id]);
 
   // Auth logout handler
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.error('Error signing out:', e);
+    }
     localStorage.removeItem('byg_chat_token');
     localStorage.removeItem('byg_chat_user');
     setCurrentUser(null);
@@ -281,14 +503,15 @@ export default function App() {
     setToken(userToken);
   };
 
-  // Handle Sending Encrypted Message
+  // Handle Sending Encrypted Message to Firestore
   const handleSendMessage = async (text: string, attachment?: Attachment) => {
     if (!activeRoomId || !currentUser) return;
 
     const encryptedPayload = await encryptText(text, activeRoomId);
 
+    const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const newMsg: Message = {
-      id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      id: msgId,
       senderId: currentUser.id,
       receiverId: activeRoomId,
       text,
@@ -297,6 +520,37 @@ export default function App() {
       status: 'sent',
       attachment,
     };
+
+    // Save message to Supabase or Firestore
+    try {
+      if (isSupabaseConfigured && supabase) {
+        await supabase.from('messages').insert({
+          id: msgId,
+          room_id: activeRoomId,
+          sender_id: currentUser.id,
+          receiver_id: activeRoomId,
+          text,
+          encrypted_payload: encryptedPayload,
+          timestamp: Date.now(),
+          status: 'sent',
+          attachment: attachment || null,
+        });
+      } else {
+        await addDoc(collection(db, 'messages'), {
+          id: msgId,
+          roomId: activeRoomId,
+          senderId: currentUser.id,
+          receiverId: activeRoomId,
+          text,
+          encryptedPayload,
+          timestamp: Date.now(),
+          status: 'sent',
+          attachment: attachment || null,
+        });
+      }
+    } catch (e) {
+      console.error('Error saving message:', e);
+    }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -308,7 +562,7 @@ export default function App() {
     }
   };
 
-  // Handle Sending Encrypted Voice Note
+  // Handle Sending Encrypted Voice Note to Firestore
   const handleSendVoiceNote = async (audioBlob: Blob, duration: number) => {
     if (!activeRoomId || !currentUser) return;
 
@@ -330,8 +584,9 @@ export default function App() {
     const text = '🎤 [Nota de Voz Cifrada]';
     const encryptedPayload = await encryptText(text, activeRoomId);
 
+    const msgId = 'msg_voice_' + Date.now();
     const newMsg: Message = {
-      id: 'msg_voice_' + Date.now(),
+      id: msgId,
       senderId: currentUser.id,
       receiverId: activeRoomId,
       text,
@@ -342,6 +597,40 @@ export default function App() {
       isVoiceNote: true,
       audioDuration: duration,
     };
+
+    try {
+      if (isSupabaseConfigured && supabase) {
+        await supabase.from('messages').insert({
+          id: msgId,
+          room_id: activeRoomId,
+          sender_id: currentUser.id,
+          receiver_id: activeRoomId,
+          text,
+          encrypted_payload: encryptedPayload,
+          timestamp: Date.now(),
+          status: 'sent',
+          attachment,
+          is_voice_note: true,
+          audio_duration: duration,
+        });
+      } else {
+        await addDoc(collection(db, 'messages'), {
+          id: msgId,
+          roomId: activeRoomId,
+          senderId: currentUser.id,
+          receiverId: activeRoomId,
+          text,
+          encryptedPayload,
+          timestamp: Date.now(),
+          status: 'sent',
+          attachment,
+          isVoiceNote: true,
+          audioDuration: duration,
+        });
+      }
+    } catch (e) {
+      console.error('Error saving voice note:', e);
+    }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -454,51 +743,197 @@ export default function App() {
     }, 500);
   };
 
-  // Create Group
+  // Create Group in Supabase or Firestore
   const handleCreateGroup = async (groupName: string) => {
     if (!currentUser) return;
 
     try {
-      const res = await fetch('/api/rooms/group', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: groupName,
-          creatorId: currentUser.id,
-        }),
-      });
+      const roomId = `room_group_${Date.now()}`;
+      const hexRandom = Math.random().toString(36).substring(2, 10).toUpperCase();
 
-      const newRoom: Room = await res.json();
-      setRooms((prev) => [newRoom, ...prev]);
-      setActiveRoomId(newRoom.id);
+      const newRoom = {
+        id: roomId,
+        name: groupName.trim(),
+        type: 'group' as const,
+        participants: [currentUser.id],
+        unreadCount: 0,
+        isEncrypted: true,
+        fingerprint: `GRP:${hexRandom}:E2EE:SAFE`,
+        avatar: '👥',
+        createdAt: Date.now(),
+      };
+
+      if (isSupabaseConfigured && supabase) {
+        await supabase.from('rooms').insert({
+          id: roomId,
+          name: groupName.trim(),
+          type: 'group',
+          participants: [currentUser.id],
+          unread_count: 0,
+          is_encrypted: true,
+          fingerprint: `GRP:${hexRandom}:E2EE:SAFE`,
+          avatar: '👥',
+          created_at: Date.now(),
+        });
+      } else {
+        await setDoc(doc(db, 'rooms', roomId), newRoom);
+      }
+      setActiveRoomId(roomId);
     } catch (e) {
       console.error('Error creating group:', e);
     }
   };
 
-  // Direct chat selection from User Directory
+  // Direct chat selection from User Directory in Supabase or Firestore
   const handleSelectUserFromDirectory = async (targetUser: User) => {
     if (!currentUser) return;
 
     try {
-      const res = await fetch('/api/rooms/direct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          currentUserId: currentUser.id,
-          targetUserId: targetUser.id,
-        }),
-      });
+      const existingRoom = rooms.find(
+        (r) =>
+          r.type === 'direct' &&
+          r.participants.includes(currentUser.id) &&
+          r.participants.includes(targetUser.id)
+      );
 
-      const directRoom: Room = await res.json();
-      setRooms((prev) => {
-        if (prev.some((r) => r.id === directRoom.id)) return prev;
-        return [directRoom, ...prev];
-      });
-      setActiveRoomId(directRoom.id);
+      if (existingRoom) {
+        setActiveRoomId(existingRoom.id);
+        return;
+      }
+
+      const roomId = `room_direct_${Date.now()}`;
+      const directRoom = {
+        id: roomId,
+        name: targetUser.name,
+        type: 'direct' as const,
+        participants: [currentUser.id, targetUser.id],
+        unreadCount: 0,
+        isEncrypted: true,
+        fingerprint: targetUser.fingerprint || 'BYG:SAFE:2026:DIRECT',
+        avatar: targetUser.avatar || '💬',
+        createdAt: Date.now(),
+      };
+
+      if (isSupabaseConfigured && supabase) {
+        await supabase.from('rooms').insert({
+          id: roomId,
+          name: targetUser.name,
+          type: 'direct',
+          participants: [currentUser.id, targetUser.id],
+          unread_count: 0,
+          is_encrypted: true,
+          fingerprint: targetUser.fingerprint || 'BYG:SAFE:2026:DIRECT',
+          avatar: targetUser.avatar || '💬',
+          created_at: Date.now(),
+        });
+      } else {
+        await setDoc(doc(db, 'rooms', roomId), directRoom);
+      }
+      setActiveRoomId(roomId);
     } catch (e) {
       console.error('Error opening direct chat room:', e);
     }
+  };
+
+  const handleUpdateProfile = async (updatedData: { name: string; avatar: string; bio: string; status: UserStatus }) => {
+    if (!currentUser) return;
+
+    const updatedUser: User = {
+      ...currentUser,
+      name: updatedData.name,
+      avatar: updatedData.avatar,
+      bio: updatedData.bio,
+      status: updatedData.status,
+    };
+
+    setCurrentUser(updatedUser);
+    localStorage.setItem('byg_chat_user', JSON.stringify(updatedUser));
+
+    try {
+      const userDocRef = doc(db, 'users', currentUser.id);
+      await setDoc(
+        userDocRef,
+        {
+          name: updatedData.name,
+          avatar: updatedData.avatar,
+          bio: updatedData.bio,
+          status: updatedData.status,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      console.error('Error actualizando Firestore profile:', e);
+    }
+
+    try {
+      await fetch('/api/users/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          name: updatedData.name,
+          avatar: updatedData.avatar,
+          bio: updatedData.bio,
+          status: updatedData.status,
+        }),
+      });
+    } catch (e) {
+      console.error('Error actualizando REST API profile:', e);
+    }
+  };
+
+  const handleViewUserProfile = async (targetUserOrId: User | string, nameHint?: string) => {
+    if (typeof targetUserOrId === 'object') {
+      setProfileTargetUser(targetUserOrId);
+      setShowProfileModal(true);
+      return;
+    }
+
+    const userId = targetUserOrId;
+    const foundInOnline = onlineUsers.find((u) => u.id === userId);
+    if (foundInOnline) {
+      setProfileTargetUser(foundInOnline);
+      setShowProfileModal(true);
+      return;
+    }
+
+    try {
+      const docSnap = await getDoc(doc(db, 'users', userId));
+      if (docSnap.exists()) {
+        const d = docSnap.data();
+        setProfileTargetUser({
+          id: userId,
+          name: d.name || nameHint || 'Usuario BYG',
+          avatar: d.avatar || '😎',
+          status: d.status || 'online',
+          bio: d.bio || '',
+          xaonId: formatXaonDisplay(d.xaonId, userId),
+          fingerprint: d.fingerprint || 'BYG:SAFE:2026:USER',
+        });
+      } else {
+        setProfileTargetUser({
+          id: userId,
+          name: nameHint || 'Usuario BYG',
+          avatar: '😎',
+          status: 'online',
+          bio: '',
+          xaonId: formatXaonDisplay(undefined, userId),
+          fingerprint: 'BYG:SAFE:2026:USER',
+        });
+      }
+    } catch (e) {
+      setProfileTargetUser({
+        id: userId,
+        name: nameHint || 'Usuario BYG',
+        avatar: '😎',
+        status: 'online',
+        bio: '',
+        xaonId: formatXaonDisplay(undefined, userId),
+        fingerprint: 'BYG:SAFE:2026:USER',
+      });
+    }
+    setShowProfileModal(true);
   };
 
   // If user not authenticated, render AuthModal
@@ -539,6 +974,10 @@ export default function App() {
           showBackMobile={!!activeRoomId}
           onOpenDirectory={() => setShowUserDirectory(true)}
           onNewGroup={() => setShowNewGroupModal(true)}
+          onOpenProfile={() => {
+            setProfileTargetUser(currentUser);
+            setShowProfileModal(true);
+          }}
         />
       </div>
 
@@ -569,6 +1008,7 @@ export default function App() {
             onOpenSecurityModal={() => setShowSecurityModal(true)}
             onOpenMediaViewer={(att) => setViewingAttachment(att)}
             onBackMobile={() => setActiveRoomId('')}
+            onViewUserProfile={handleViewUserProfile}
           />
         </div>
       </div>
@@ -579,6 +1019,25 @@ export default function App() {
         onClose={() => setShowUserDirectory(false)}
         currentUser={currentUser}
         onSelectUser={handleSelectUserFromDirectory}
+        onViewUserProfile={handleViewUserProfile}
+      />
+
+      {/* Profile Modal */}
+      <ProfileModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+        currentUser={currentUser}
+        targetUser={profileTargetUser}
+        onUpdateProfile={handleUpdateProfile}
+        onStartChatWithUser={(u) => {
+          handleSelectUserFromDirectory(u);
+          setShowProfileModal(false);
+        }}
+        onStartCallWithUser={(u) => {
+          handleSelectUserFromDirectory(u);
+          handleStartVoiceCall();
+          setShowProfileModal(false);
+        }}
       />
 
       {/* Call Modal Overlay */}

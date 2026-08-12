@@ -26,7 +26,7 @@ export const NewGroupModal: React.FC<NewGroupModalProps> = ({ isOpen, onClose, o
         <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
           <div className="flex items-center space-x-2 text-white font-bold text-lg">
             <Users className="w-5 h-5 text-blue-400" />
-            <span>Crear Grupo Cifrado</span>
+            <span>Crear Nuevo Grupo</span>
           </div>
           <button
             onClick={onClose}
@@ -39,11 +39,11 @@ export const NewGroupModal: React.FC<NewGroupModalProps> = ({ isOpen, onClose, o
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="text-xs font-bold uppercase tracking-wider text-zinc-400 block mb-1.5">
-              Nombre del Grupo Cifrado
+              Nombre del Grupo
             </label>
             <input
               type="text"
-              placeholder="Ej. Proyecto Alpha Cifrado"
+              placeholder="Ej. Equipo de Proyecto"
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
               className="w-full bg-[#0a0a0a] border border-zinc-800 rounded-2xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500"
@@ -51,10 +51,10 @@ export const NewGroupModal: React.FC<NewGroupModalProps> = ({ isOpen, onClose, o
             />
           </div>
 
-          <div className="p-3 bg-[#161616] border border-zinc-800 rounded-2xl text-xs text-blue-300 flex items-start space-x-2">
-            <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+          <div className="p-3 bg-[#161616] border border-zinc-800 rounded-2xl text-xs text-zinc-300 flex items-start space-x-2">
+            <Users className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
             <span>
-              Todos los participantes del grupo compartirán llaves criptográficas derivadas con AES-256-GCM.
+              Los grupos te permiten chatear con múltiples participantes en tiempo real.
             </span>
           </div>
 

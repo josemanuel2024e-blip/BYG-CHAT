@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Phone, Shield, Lock, Send, Paperclip, Mic, Play, Pause, FileText, CheckCheck, Eye, EyeOff, Info, ChevronLeft } from 'lucide-react';
+import { Phone, Shield, Lock, Send, Paperclip, Mic, Play, Pause, FileText, CheckCheck, Eye, EyeOff, Info, ChevronLeft, Hash } from 'lucide-react';
 import { Message, Room, Attachment, User } from '../types';
 import { VoiceRecorder } from './VoiceRecorder';
 import { MediaUploader } from './MediaUploader';
 import { Avatar } from './Avatar';
+import { formatXaonDisplay } from '../utils/xaon';
 
 interface ChatAreaProps {
   room: Room | null;
@@ -15,6 +16,7 @@ interface ChatAreaProps {
   onOpenSecurityModal: () => void;
   onOpenMediaViewer: (attachment: Attachment) => void;
   onBackMobile?: () => void;
+  onViewUserProfile?: (userId: string, name: string) => void;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
@@ -27,6 +29,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onOpenSecurityModal,
   onOpenMediaViewer,
   onBackMobile,
+  onViewUserProfile,
 }) => {
   const [textInput, setTextInput] = useState('');
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -47,9 +50,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <div className="p-6 rounded-3xl bg-[#161616] border border-zinc-800 shadow-xl mb-4">
           <Shield className="w-12 h-12 text-blue-400 animate-pulse" />
         </div>
-        <h3 className="text-xl font-bold text-white mb-2">BYG CHAT Mensajería Cifrada</h3>
+        <h3 className="text-xl font-bold text-white mb-2">BYG CHAT</h3>
         <p className="text-xs text-zinc-400 max-w-sm">
-          Selecciona un chat en la barra lateral para comenzar una comunicación segura con cifrado de extremo a extremo.
+          Selecciona un chat en la barra lateral para comenzar a enviar mensajes.
         </p>
       </div>
     );
@@ -97,7 +100,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   return (
     <main className="flex-1 bg-[#111111] border-b sm:border border-zinc-800 sm:rounded-3xl flex flex-col h-full relative overflow-hidden shadow-2xl">
-      {/* Top Bar Header - WhatsApp style */}
+      {/* Top Bar Header */}
       <div className="px-3 sm:px-6 py-2.5 bg-[#161616] border-b border-zinc-800/80 flex items-center justify-between shrink-0 z-10">
         <div className="flex items-center space-x-2 sm:space-x-3.5 min-w-0">
           {onBackMobile && (
@@ -110,26 +113,37 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </button>
           )}
 
-          <Avatar
-            src={room.avatar || (room.type === 'group' ? '👥' : '💬')}
-            name={room.name}
-            size="sm"
-            status="online"
-            showStatus
-          />
+          <div
+            onClick={() => {
+              if (onViewUserProfile && room.type === 'direct') {
+                onViewUserProfile(room.id, room.name);
+              }
+            }}
+            className={`flex items-center space-x-2.5 min-w-0 ${
+              room.type === 'direct' ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''
+            }`}
+            title={room.type === 'direct' ? 'Haz clic para ver el perfil' : ''}
+          >
+            <Avatar
+              src={room.avatar || (room.type === 'group' ? '👥' : '💬')}
+              name={room.name}
+              size="sm"
+              status="online"
+              showStatus
+            />
 
-          <div className="min-w-0">
-            <div className="flex items-center space-x-1.5">
+            <div className="min-w-0">
               <h2 className="text-sm font-bold text-white truncate max-w-[140px] sm:max-w-xs">{room.name}</h2>
-              <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-semibold shrink-0">
-                <Lock className="w-2.5 h-2.5" />
-                <span>E2EE</span>
-              </span>
+              <div className="flex items-center space-x-1.5 text-[10px]">
+                <span className="text-zinc-400">En línea</span>
+                {room.type === 'direct' && (
+                  <span className="font-mono text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.2 rounded-md font-bold inline-flex items-center space-x-0.5">
+                    <Hash className="w-2.5 h-2.5" />
+                    <span>XAON: {formatXaonDisplay(undefined, room.id)}</span>
+                  </span>
+                )}
+              </div>
             </div>
-
-            <p className="text-[10px] text-zinc-400 font-mono truncate">
-              Huella: {room.fingerprint.slice(0, 14)}...
-            </p>
           </div>
         </div>
 
@@ -137,39 +151,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
           <button
             onClick={onStartVoiceCall}
-            className="p-2 sm:px-3.5 sm:py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-semibold transition-all active:scale-95 flex items-center space-x-1.5 shadow-lg shadow-blue-600/20 min-h-[44px] min-w-[44px] justify-center"
-            title="Llamada de voz cifrada"
+            className="p-2 sm:px-3.5 sm:py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-semibold transition-all active:scale-95 flex items-center space-x-1.5 shadow-lg shadow-blue-600/20 min-h-[42px] min-w-[42px] justify-center"
+            title="Llamada de voz"
           >
             <Phone className="w-4 h-4 text-white" />
             <span className="hidden sm:inline">Llamar</span>
-          </button>
-
-          <button
-            onClick={onOpenSecurityModal}
-            className="p-2 sm:p-2.5 bg-[#1d1d1d] hover:bg-[#252525] border border-zinc-800 text-zinc-300 rounded-2xl text-xs transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center active:scale-95"
-            title="Inspeccionar clave de cifrado"
-          >
-            <Info className="w-4 h-4 text-blue-400" />
           </button>
         </div>
       </div>
 
       {/* Messages Stream */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-        {/* Security Banner */}
-        <div className="p-3 max-w-md mx-auto rounded-2xl bg-[#151515] border border-zinc-800 text-center space-y-1 my-2">
-          <div className="flex items-center justify-center space-x-1.5 text-xs font-bold text-blue-400">
-            <Lock className="w-3.5 h-3.5" />
-            <span>Cifrado de Extremo a Extremo Verificado</span>
-          </div>
-          <p className="text-[11px] text-zinc-400">
-            Los mensajes, llamadas y archivos intercambiados en esta sala se cifran localmente con AES-256-GCM.
-          </p>
-        </div>
-
         {messages.map((msg) => {
           const isMe = msg.senderId === currentUser.id;
-          const showRaw = rawCipherMap[msg.id] || false;
 
           return (
             <div
@@ -247,48 +241,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     )}
 
                     <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-
-                    {/* Raw Cipher Inspector view */}
-                    {showRaw && (
-                      <div className="mt-2 p-3 bg-[#0a0a0a] rounded-xl border border-blue-500/30 text-[10px] font-mono text-blue-400 space-y-1">
-                        <div className="flex items-center justify-between text-zinc-400 font-bold border-b border-zinc-800 pb-1">
-                          <span>Payload Cifrado RAW</span>
-                          <span className="text-blue-400">{msg.encryptedPayload.algorithm}</span>
-                        </div>
-                        <p className="break-all opacity-90">
-                          <span className="text-zinc-400">Ciphertext:</span> {msg.encryptedPayload.ciphertext.slice(0, 60)}...
-                        </p>
-                        <p>
-                          <span className="text-zinc-400">IV Vector:</span> {msg.encryptedPayload.iv}
-                        </p>
-                        <p>
-                          <span className="text-zinc-400">Integridad Hash:</span> {msg.encryptedPayload.hash}
-                        </p>
-                      </div>
-                    )}
                   </div>
                 )}
 
                 {/* Footer details */}
-                <div className="flex items-center justify-between space-x-2 mt-2 pt-1 border-t border-white/10 text-[10px] opacity-80">
-                  <button
-                    onClick={() => toggleRawCipher(msg.id)}
-                    className="flex items-center space-x-1 hover:text-blue-200 transition-colors"
-                    title="Inspeccionar payload cifrado"
-                  >
-                    {showRaw ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                    <span>{showRaw ? 'Ocultar RAW' : 'Ver Cifrado'}</span>
-                  </button>
-
-                  <div className="flex items-center space-x-1">
-                    <span>
-                      {new Date(msg.timestamp).toLocaleTimeString('es-ES', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                    {isMe && <CheckCheck className="w-3.5 h-3.5 text-blue-200 inline" />}
-                  </div>
+                <div className="flex items-center justify-end space-x-1 mt-1 pt-0.5 text-[10px] opacity-80">
+                  <span>
+                    {new Date(msg.timestamp).toLocaleTimeString('es-ES', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                  {isMe && <CheckCheck className="w-3.5 h-3.5 text-blue-200 inline" />}
                 </div>
               </div>
             </div>

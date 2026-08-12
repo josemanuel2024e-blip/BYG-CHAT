@@ -1,0 +1,84 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profiles",
+      "description": "User profile data and E2EE fingerprints.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "avatar": { "type": "string" },
+        "bio": { "type": "string" },
+        "status": { "type": "string" },
+        "fingerprint": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["uid", "username", "name"]
+    },
+    "rooms": {
+      "title": "Chat Rooms",
+      "description": "Direct and group E2EE chat channels.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "participants": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unreadCount": { "type": "number" },
+        "isEncrypted": { "type": "boolean" },
+        "fingerprint": { "type": "string" },
+        "avatar": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "type", "participants"]
+    },
+    "messages": {
+      "title": "Encrypted Messages",
+      "description": "E2EE messages sent in chat rooms.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "roomId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "roomId", "senderId", "timestamp"]
+    }
+  },
+  "security": {
+    "rules": [
+      {
+        "collection": "users",
+        "allow": {
+          "read": "request.auth != null",
+          "write": "request.auth != null && request.auth.uid == resource.data.uid"
+        }
+      },
+      {
+        "collection": "rooms",
+        "allow": {
+          "read": "request.auth != null",
+          "create": "request.auth != null",
+          "update": "request.auth != null && request.auth.uid in resource.data.participants",
+          "delete": "request.auth != null && request.auth.uid in resource.data.participants"
+        }
+      },
+      {
+        "collection": "messages",
+        "allow": {
+          "read": "request.auth != null",
+          "create": "request.auth != null",
+          "update": "request.auth != null && request.auth.uid == resource.data.senderId",
+          "delete": "request.auth != null && request.auth.uid == resource.data.senderId"
+        }
+      }
+    ]
+  }
+}

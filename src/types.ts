@@ -5,6 +5,7 @@ export interface User {
   name: string;
   avatar: string;
   status: UserStatus;
+  xaonId: string;
   publicKeyPem?: string;
   fingerprint: string;
   bio?: string;

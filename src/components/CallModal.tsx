@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PhoneOff, Mic, MicOff, Volume2, VolumeX, ShieldCheck, Activity } from 'lucide-react';
+import { PhoneOff, Mic, MicOff, Volume2, VolumeX, Activity, Hash, PhoneCall } from 'lucide-react';
 import { CallState } from '../types';
 import { Avatar } from './Avatar';
+import { formatXaonDisplay } from '../utils/xaon';
 
 interface CallModalProps {
   callState: CallState;
@@ -92,8 +93,8 @@ export const CallModal: React.FC<CallModalProps> = ({
 
         {/* Security badge top bar */}
         <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full text-blue-400 text-xs font-semibold mb-6">
-          <ShieldCheck className="w-3.5 h-3.5" />
-          <span>Llamada de Voz Cifrada E2EE</span>
+          <PhoneOff className="w-3.5 h-3.5" />
+          <span>Llamada de Voz</span>
         </div>
 
         {/* Avatar with pulsing halo */}
@@ -113,10 +114,16 @@ export const CallModal: React.FC<CallModalProps> = ({
           )}
         </div>
 
-        {/* Name and status */}
+        {/* Name, XAON ID caller identification and status */}
         <h3 className="text-2xl font-extrabold text-white mb-1 tracking-tight">
           {callState.peerName}
         </h3>
+
+        {/* XAON Caller ID Identifier */}
+        <div className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/25 rounded-xl font-mono text-xs font-bold text-blue-400 mb-3">
+          <Hash className="w-3.5 h-3.5" />
+          <span>ID XAON: {formatXaonDisplay(undefined, callState.peerId || callState.peerName)}</span>
+        </div>
 
         <div className="text-sm font-medium text-zinc-400 mb-6 flex items-center justify-center space-x-2">
           {callState.status === 'calling' && (
