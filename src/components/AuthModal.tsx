@@ -1,18 +1,8 @@
 import React, { useState } from 'react';
-import { Shield, Lock, ArrowRight, AlertCircle, Check, Smile } from 'lucide-react';
+import { Shield, Lock, ArrowRight, AlertCircle, Smile } from 'lucide-react';
 import { User } from '../types';
 import { generateXaonId, formatXaonDisplay } from '../utils/xaon';
 import { Avatar } from './Avatar';
-import {
-  auth,
-  db,
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  doc,
-  setDoc,
-  getDoc,
-  updateProfile,
-} from '../lib/firebase';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 interface AuthModalProps {
@@ -62,6 +52,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
       return;
     }
 
+    if (!isSupabaseConfigured || !supabase) {
+      setError('Supabase no está configurado correctamente.');
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -71,344 +66,127 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
         : `${cleanUsername.replace(/[^a-z0-9_]/g, '_')}@bygchat.app`;
       const avatarValue = customEmojiInput.trim() || selectedEmoji;
 
-      if (isSupabaseConfigured && supabase) {
-        if (mode === 'register') {
-          const { data: authData, error: signUpError } = await supabase.auth.signUp({
-            email,
-            password,
-          });
-
-          if (signUpError) throw signUpError;
-          const spUser = authData.user;
-          if (!spUser) throw new Error('No se pudo crear el usuario en Supabase');
-
-          const hexRandom = Math.random().toString(36).substring(2, 10).toUpperCase();
-          const fingerprint = `BYG:${hexRandom.slice(0, 4)}:${hexRandom.slice(4)}:2026:SAFE`;
-
-          const userXaonId = generateXaonId(spUser.id);
-
-          const userData: User = {
-            id: spUser.id,
-            name: name.trim(),
-            avatar: avatarValue,
-            status: 'online',
-            bio: bio.trim() || 'Usuario verificado de BYG CHAT',
-            xaonId: userXaonId,
-            fingerprint,
-          };
-
-          // Upsert into Supabase users table
-          await supabase.from('users').upsert({
-            id: spUser.id,
-            username: cleanUsername,
-            name: name.trim(),
-            avatar: avatarValue,
-            bio: bio.trim(),
-            status: 'online',
-            fingerprint,
-            xaon_id: userXaonId,
-            created_at: Date.now(),
-          });
-
-          // Ensure default general room in Supabase rooms table
-          await supabase.from('rooms').upsert({
-            id: 'room_general',
-            name: 'Canal General BYG',
-            type: 'group',
-            participants: [spUser.id],
-            unread_count: 0,
-            is_encrypted: true,
-            fingerprint: '990B:1102:4455:8877:6611:3322',
-            avatar: '👥',
-            created_at: Date.now(),
-          });
-
-          const token = authData.session?.access_token || spUser.id;
-          localStorage.setItem('byg_chat_token', token);
-          localStorage.setItem('byg_chat_user', JSON.stringify(userData));
-
-          onLoginSuccess(userData, token);
-          return;
-        } else {
-          // Login with Supabase
-          const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
-            email,
-            password,
-          });
-
-          if (signInError) throw signInError;
-          const spUser = authData.user;
-          if (!spUser) throw new Error('Usuario o contraseña no válidos');
-
-          const { data: userProfile } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', spUser.id)
-            .single();
-
-          let userData: User;
-          if (userProfile) {
-            userData = {
-              id: spUser.id,
-              name: userProfile.name || cleanUsername,
-              avatar: userProfile.avatar || '😎',
-              status: 'online',
-              bio: userProfile.bio || 'Usuario verificado de BYG CHAT',
-              xaonId: formatXaonDisplay(userProfile.xaon_id || userProfile.xaonId, spUser.id),
-              fingerprint: userProfile.fingerprint || 'BYG:SAFE:2026:AUTH',
-            };
-          } else {
-            const userXaonId = generateXaonId(spUser.id);
-            userData = {
-              id: spUser.id,
-              name: cleanUsername,
-              avatar: '😎',
-              status: 'online',
-              bio: 'Usuario verificado de BYG CHAT',
-              xaonId: userXaonId,
-              fingerprint: 'BYG:SAFE:2026:AUTH',
-            };
-            await supabase.from('users').upsert({
-              id: spUser.id,
-              username: cleanUsername,
-              name: userData.name,
-              avatar: userData.avatar,
-              bio: userData.bio,
-              status: 'online',
-              fingerprint: userData.fingerprint,
-              xaon_id: userXaonId,
-              created_at: Date.now(),
-            });
-          }
-
-          const token = authData.session?.access_token || spUser.id;
-          localStorage.setItem('byg_chat_token', token);
-          localStorage.setItem('byg_chat_user', JSON.stringify(userData));
-
-          onLoginSuccess(userData, token);
-          return;
-        }
-      }
-
       if (mode === 'register') {
-        try {
-          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-          const fbUser = userCredential.user;
+        const { data: authData, error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+        });
 
-          await updateProfile(fbUser, { displayName: name.trim() });
+        if (signUpError) throw signUpError;
+        const spUser = authData.user;
+        if (!spUser) throw new Error('No se pudo crear el usuario en Supabase');
 
-          const hexRandom = Math.random().toString(36).substring(2, 10).toUpperCase();
-          const fingerprint = `BYG:${hexRandom.slice(0, 4)}:${hexRandom.slice(4)}:2026:SAFE`;
-          const xaonId = generateXaonId(fbUser.uid);
+        const hexRandom = Math.random().toString(36).substring(2, 10).toUpperCase();
+        const fingerprint = `BYG:${hexRandom.slice(0, 4)}:${hexRandom.slice(4)}:2026:SAFE`;
+        const userXaonId = generateXaonId(spUser.id);
 
-          const userData: User = {
-            id: fbUser.uid,
-            name: name.trim(),
-            avatar: avatarValue,
-            status: 'online',
-            xaonId,
-            bio: bio.trim() || 'Usuario verificado de BYG CHAT',
-            fingerprint,
-          };
+        const userData: User = {
+          id: spUser.id,
+          name: name.trim(),
+          avatar: avatarValue,
+          status: 'online',
+          bio: bio.trim() || 'Usuario verificado de BYG CHAT',
+          xaonId: userXaonId,
+          fingerprint,
+        };
 
-          // Store user profile in Firestore
-          await setDoc(doc(db, 'users', fbUser.uid), {
-            uid: fbUser.uid,
-            username: cleanUsername,
-            email,
-            name: name.trim(),
-            avatar: avatarValue,
-            bio: bio.trim(),
-            status: 'online',
-            fingerprint,
-            xaonId,
-            createdAt: Date.now(),
-          });
+        // Insert into Supabase users table
+        const { error: upsertError } = await supabase.from('users').upsert({
+          id: spUser.id,
+          username: cleanUsername,
+          name: name.trim(),
+          avatar: avatarValue,
+          bio: bio.trim(),
+          status: 'online',
+          fingerprint,
+          xaon_id: userXaonId,
+          created_at: Date.now(),
+        });
 
-          // Ensure default general room exists
-          await setDoc(
-            doc(db, 'rooms', 'room_general'),
-            {
-              id: 'room_general',
-              name: 'Canal General BYG',
-              type: 'group',
-              participants: [fbUser.uid],
-              unreadCount: 0,
-              isEncrypted: true,
-              fingerprint: '990B:1102:4455:8877:6611:3322',
-              avatar: '👥',
-              createdAt: Date.now(),
-            },
-            { merge: true }
-          );
+        if (upsertError) throw upsertError;
 
-          const idToken = await fbUser.getIdToken();
-          localStorage.setItem('byg_chat_token', idToken);
-          localStorage.setItem('byg_chat_user', JSON.stringify(userData));
-
-          onLoginSuccess(userData, idToken);
-        } catch (fbErr: any) {
-          if (
-            fbErr.code === 'auth/operation-not-allowed' ||
-            fbErr.code === 'auth/admin-restricted-operation' ||
-            fbErr.code === 'auth/configuration-not-found'
-          ) {
-            console.warn('Firebase Auth restricted. Executing fallback server authentication...');
-            await performServerAuthFallback();
-            return;
-          }
-          throw fbErr;
-        }
-      } else {
-        // Login mode
-        try {
-          const userCredential = await signInWithEmailAndPassword(auth, email, password);
-          const fbUser = userCredential.user;
-
-          // Fetch profile document from Firestore
-          const userDocRef = doc(db, 'users', fbUser.uid);
-          const userSnap = await getDoc(userDocRef);
-
-          let userData: User;
-          if (userSnap.exists()) {
-            const d = userSnap.data();
-            const userXaonId = d.xaonId || generateXaonId(fbUser.uid);
-            userData = {
-              id: fbUser.uid,
-              name: d.name || fbUser.displayName || 'Usuario BYG',
-              avatar: d.avatar || '😎',
-              status: 'online',
-              xaonId: userXaonId,
-              bio: d.bio || 'Usuario verificado de BYG CHAT',
-              fingerprint: d.fingerprint || 'BYG:SAFE:2026:AUTH',
-            };
-            if (!d.xaonId) {
-              await setDoc(doc(db, 'users', fbUser.uid), { xaonId: userXaonId }, { merge: true });
-            }
-          } else {
-            const userXaonId = generateXaonId(fbUser.uid);
-            userData = {
-              id: fbUser.uid,
-              name: fbUser.displayName || cleanUsername,
-              avatar: '😎',
-              status: 'online',
-              xaonId: userXaonId,
-              bio: 'Usuario verificado de BYG CHAT',
-              fingerprint: 'BYG:SAFE:2026:AUTH',
-            };
-            await setDoc(doc(db, 'users', fbUser.uid), {
-              uid: fbUser.uid,
-              username: cleanUsername,
-              email,
-              name: userData.name,
-              avatar: userData.avatar,
-              bio: userData.bio,
-              status: 'online',
-              fingerprint: userData.fingerprint,
-              xaonId: userXaonId,
-              createdAt: Date.now(),
-            });
-          }
-
-          const idToken = await fbUser.getIdToken();
-          localStorage.setItem('byg_chat_token', idToken);
-          localStorage.setItem('byg_chat_user', JSON.stringify(userData));
-
-          onLoginSuccess(userData, idToken);
-        } catch (fbErr: any) {
-          if (
-            fbErr.code === 'auth/operation-not-allowed' ||
-            fbErr.code === 'auth/admin-restricted-operation' ||
-            fbErr.code === 'auth/configuration-not-found'
-          ) {
-            console.warn('Firebase Auth restricted. Executing fallback server authentication...');
-            await performServerAuthFallback();
-            return;
-          }
-          throw fbErr;
-        }
-      }
-    } catch (err: any) {
-      console.error('Auth error:', err);
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-        setError('Usuario o contraseña incorrectos.');
-      } else if (err.code === 'auth/email-already-in-use') {
-        setError('El nombre de usuario ya está registrado.');
-      } else if (err.code === 'auth/weak-password') {
-        setError('La contraseña debe tener al menos 6 caracteres.');
-      } else {
-        setError(err.message || 'Error al autenticar con la base de datos.');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const performServerAuthFallback = async () => {
-    const cleanUsername = username.toLowerCase().trim();
-    const avatarValue = customEmojiInput.trim() || selectedEmoji;
-    const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
-    const body =
-      mode === 'login'
-        ? { username: cleanUsername, password }
-        : {
-            username: cleanUsername,
-            password,
-            name: name.trim(),
-            bio: bio.trim(),
-            avatar: avatarValue,
-          };
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.message || 'Error en la autenticación local.');
-    }
-
-    try {
-      const userXaonId = data.user.xaonId || generateXaonId(data.user.id);
-      data.user.xaonId = userXaonId;
-
-      await setDoc(doc(db, 'users', data.user.id), {
-        uid: data.user.id,
-        username: cleanUsername,
-        name: data.user.name,
-        avatar: data.user.avatar,
-        bio: data.user.bio,
-        status: 'online',
-        fingerprint: data.user.fingerprint,
-        xaonId: userXaonId,
-        createdAt: Date.now(),
-      });
-
-      await setDoc(
-        doc(db, 'rooms', 'room_general'),
-        {
+        // Ensure default general room in Supabase
+        await supabase.from('rooms').upsert({
           id: 'room_general',
           name: 'Canal General BYG',
           type: 'group',
-          participants: [data.user.id],
-          unreadCount: 0,
-          isEncrypted: true,
+          participants: [spUser.id],
+          unread_count: 0,
+          is_encrypted: true,
           fingerprint: '990B:1102:4455:8877:6611:3322',
           avatar: '👥',
-          createdAt: Date.now(),
-        },
-        { merge: true }
-      );
-    } catch (e) {
-      console.warn('Firestore fallback sync warning:', e);
+          created_at: Date.now(),
+        });
+
+        const token = authData.session?.access_token || spUser.id;
+        localStorage.setItem('byg_chat_token', token);
+        localStorage.setItem('byg_chat_user', JSON.stringify(userData));
+
+        onLoginSuccess(userData, token);
+      } else {
+        // Login with Supabase
+        const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+
+        if (signInError) throw signInError;
+        const spUser = authData.user;
+        if (!spUser) throw new Error('Usuario o contraseña no válidos');
+
+        const { data: userProfile } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', spUser.id)
+          .single();
+
+        let userData: User;
+        if (userProfile) {
+          userData = {
+            id: spUser.id,
+            name: userProfile.name || cleanUsername,
+            avatar: userProfile.avatar || '😎',
+            status: 'online',
+            bio: userProfile.bio || 'Usuario verificado de BYG CHAT',
+            xaonId: formatXaonDisplay(userProfile.xaon_id || userProfile.xaonId, spUser.id),
+            fingerprint: userProfile.fingerprint || 'BYG:SAFE:2026:AUTH',
+          };
+        } else {
+          const userXaonId = generateXaonId(spUser.id);
+          userData = {
+            id: spUser.id,
+            name: cleanUsername,
+            avatar: '😎',
+            status: 'online',
+            bio: 'Usuario verificado de BYG CHAT',
+            xaonId: userXaonId,
+            fingerprint: 'BYG:SAFE:2026:AUTH',
+          };
+          await supabase.from('users').upsert({
+            id: spUser.id,
+            username: cleanUsername,
+            name: userData.name,
+            avatar: userData.avatar,
+            bio: userData.bio,
+            status: 'online',
+            fingerprint: userData.fingerprint,
+            xaon_id: userXaonId,
+            created_at: Date.now(),
+          });
+        }
+
+        const token = authData.session?.access_token || spUser.id;
+        localStorage.setItem('byg_chat_token', token);
+        localStorage.setItem('byg_chat_user', JSON.stringify(userData));
+
+        onLoginSuccess(userData, token);
+      }
+    } catch (err: any) {
+      console.error('Auth error:', err);
+      setError(err.message || 'Error al autenticar con la base de datos.');
+    } finally {
+      setLoading(false);
     }
-
-    localStorage.setItem('byg_chat_token', data.token);
-    localStorage.setItem('byg_chat_user', JSON.stringify(data.user));
-
-    onLoginSuccess(data.user, data.token);
   };
 
   return (

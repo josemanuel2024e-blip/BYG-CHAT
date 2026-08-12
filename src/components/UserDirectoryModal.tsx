@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { UserCheck, Search, MessageSquare, X, Hash, Phone } from 'lucide-react';
 import { User } from '../types';
 import { Avatar } from './Avatar';
-import { db, collection, getDocs } from '../lib/firebase';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 import { formatXaonDisplay, generateXaonId } from '../utils/xaon';
 
 interface UserDirectoryModalProps {
@@ -26,57 +25,26 @@ export const UserDirectoryModal: React.FC<UserDirectoryModalProps> = ({
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !supabase) return;
 
     const loadUsers = async () => {
       setLoading(true);
       try {
-        if (isSupabaseConfigured && supabase) {
-          const { data, error } = await supabase.from('users').select('*');
-          if (error) throw error;
-          const fetchedUsers: User[] = (data || []).map((u) => ({
-            id: u.id,
-            name: u.name || u.username || 'Usuario BYG',
-            avatar: u.avatar || '😎',
-            status: u.status || 'online',
-            bio: u.bio || '',
-            xaonId: u.xaonId || formatXaonDisplay(u.xaon_id, u.id),
-            fingerprint: u.fingerprint || 'BYG:SAFE:2026:USER',
-          }));
-          setUsers(fetchedUsers.filter((u) => u.id !== currentUser.id));
-          return;
-        }
-
-        const snapshot = await getDocs(collection(db, 'users'));
-        const fetchedUsers: User[] = snapshot.docs.map((docSnap) => {
-          const data = docSnap.data();
-          const uid = data.uid || docSnap.id;
-          return {
-            id: uid,
-            name: data.name || data.username || 'Usuario BYG',
-            avatar: data.avatar || '😎',
-            status: data.status || 'online',
-            bio: data.bio || '',
-            xaonId: formatXaonDisplay(data.xaonId, uid),
-            fingerprint: data.fingerprint || 'BYG:SAFE:2026:USER',
-          };
-        });
+        const { data, error } = await supabase.from('users').select('*');
+        if (error) throw error;
+        
+        const fetchedUsers: User[] = (data || []).map((u) => ({
+          id: u.id,
+          name: u.name || u.username || 'Usuario BYG',
+          avatar: u.avatar || '😎',
+          status: u.status || 'online',
+          bio: u.bio || '',
+          xaonId: u.xaonId || formatXaonDisplay(u.xaon_id, u.id),
+          fingerprint: u.fingerprint || 'BYG:SAFE:2026:USER',
+        }));
         setUsers(fetchedUsers.filter((u) => u.id !== currentUser.id));
       } catch (err) {
         console.error('Error fetching users:', err);
-        try {
-          const res = await fetch('/api/users');
-          const data = await res.json();
-          if (Array.isArray(data)) {
-            setUsers(
-              data
-                .filter((u: User) => u.id !== currentUser.id)
-                .map((u: User) => ({ ...u, xaonId: formatXaonDisplay(u.xaonId, u.id) }))
-            );
-          }
-        } catch (e) {
-          console.error('API fallback error:', e);
-        }
       } finally {
         setLoading(false);
       }

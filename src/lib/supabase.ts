@@ -22,6 +22,7 @@ create table if not exists public.users (
   bio text,
   status text default 'online',
   fingerprint text,
+  xaon_id text,
   created_at bigint default extract(epoch from now()) * 1000
 );
 

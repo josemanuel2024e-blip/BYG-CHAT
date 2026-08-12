@@ -17,24 +17,7 @@ import { ProfileModal } from './components/ProfileModal';
 import { SettingsModal } from './components/SettingsModal';
 import { LockScreen } from './components/LockScreen';
 import { motion, AnimatePresence } from 'motion/react';
-import {
-  auth,
-  db,
-  onAuthStateChanged,
-  signOut,
-  collection,
-  doc,
-  deleteDoc,
-  updateDoc,
-  getDoc,
-  setDoc,
-  addDoc,
-  onSnapshot,
-  query,
-  where,
-  getDocs,
-} from './lib/firebase';
-import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { supabase } from './lib/supabase';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -44,7 +27,6 @@ export default function App() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string>('');
   const [roomMessagesMap, setRoomMessagesMap] = useState<Record<string, Message[]>>({});
-  const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [typingUsers, setTypingUsers] = useState<Record<string, string[]>>({}); // roomId -> list of user names
 
@@ -80,7 +62,6 @@ export default function App() {
   const [viewingAttachment, setViewingAttachment] = useState<Attachment | null>(null);
 
   const initialMsgsLoadedRef = useRef<Record<string, boolean>>({});
-  const wsRef = useRef<WebSocket | null>(null);
 
   // Call state
   const [callState, setCallState] = useState<CallState>({
@@ -181,72 +162,55 @@ export default function App() {
     };
   }, []);
 
-  // 1. Check Firebase Auth session or localStorage session on startup
+  // 1. Check Supabase Auth session on startup
   useEffect(() => {
     // Solicitar permiso para notificaciones web
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
 
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      if (fbUser) {
-        try {
-          const idToken = await fbUser.getIdToken();
-          setToken(idToken);
+    if (!supabase) return;
 
-          const userDocRef = doc(db, 'users', fbUser.uid);
-          const userSnap = await getDoc(userDocRef);
-
-          if (userSnap.exists()) {
-            const d = userSnap.data();
-            const u: User = {
-              id: fbUser.uid,
-              name: d.name || fbUser.displayName || 'Usuario BYG',
-              avatar: d.avatar || '😎',
-              status: 'online',
-              bio: d.bio || 'Usuario verificado de BYG CHAT',
-              xaonId: formatXaonDisplay(d.xaonId, fbUser.uid),
-              fingerprint: d.fingerprint || 'BYG:SAFE:2026:AUTH',
-            };
-            setCurrentUser(u);
-            localStorage.setItem('byg_chat_user', JSON.stringify(u));
-            localStorage.setItem('byg_chat_token', idToken);
-          } else {
-            const u: User = {
-              id: fbUser.uid,
-              name: fbUser.displayName || 'Usuario BYG',
-              avatar: '😎',
-              status: 'online',
-              bio: 'Usuario verificado de BYG CHAT',
-              xaonId: formatXaonDisplay(undefined, fbUser.uid),
-              fingerprint: 'BYG:SAFE:2026:AUTH',
-            };
-            setCurrentUser(u);
-          }
-        } catch (e) {
-          console.error('Error restoring session:', e);
-        }
-      } else {
-        const savedToken = localStorage.getItem('byg_chat_token');
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        setToken(session.access_token);
+        // User data is usually stored in metadata or we fetch from users table
         const savedUserRaw = localStorage.getItem('byg_chat_user');
-        if (savedToken && savedUserRaw) {
-          try {
-            const parsedUser = JSON.parse(savedUserRaw);
-            parsedUser.xaonId = formatXaonDisplay(parsedUser.xaonId, parsedUser.id);
-            setToken(savedToken);
-            setCurrentUser(parsedUser);
-            return;
-          } catch (e) {
-            localStorage.removeItem('byg_chat_token');
-            localStorage.removeItem('byg_chat_user');
-          }
+        if (savedUserRaw) {
+           setCurrentUser(JSON.parse(savedUserRaw));
+        } else {
+           // Fetch from profile
+           supabase.from('users').select('*').eq('id', session.user.id).single().then(({ data: profile }) => {
+             if (profile) {
+               const u: User = {
+                  id: session.user.id,
+                  name: profile.name || 'Usuario BYG',
+                  avatar: profile.avatar || '😎',
+                  status: 'online',
+                  bio: profile.bio || 'Usuario verificado de BYG CHAT',
+                  xaonId: formatXaonDisplay(profile.xaon_id || profile.xaonId, session.user.id),
+                  fingerprint: profile.fingerprint || 'BYG:SAFE:2026:AUTH',
+               };
+               setCurrentUser(u);
+               localStorage.setItem('byg_chat_user', JSON.stringify(u));
+             }
+           });
         }
-        setCurrentUser(null);
-        setToken(null);
       }
     });
 
-    return () => unsubscribe();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        setToken(session.access_token);
+      } else {
+        setCurrentUser(null);
+        setToken(null);
+        localStorage.removeItem('byg_chat_token');
+        localStorage.removeItem('byg_chat_user');
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   // 2. Load E2EE Key Vault when logged in
@@ -259,240 +223,151 @@ export default function App() {
     }
   }, [currentUser?.id]);
 
-  // 3. Real-time Rooms sync for logged in user (Supabase or Firestore)
+  // 3. Real-time Rooms sync for logged in user (Supabase)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !supabase) return;
 
-    if (isSupabaseConfigured && supabase) {
-      const fetchSupabaseRooms = async () => {
-        const { data, error } = await supabase.from('rooms').select('*');
-        if (!error && data) {
-          const fetchedRooms: Room[] = data.map((r) => ({
-            id: r.id,
-            name: r.name || 'Canal Cifrado',
-            type: r.type || 'group',
-            participants: r.participants || [],
-            unreadCount: r.unread_count || 0,
-            isEncrypted: r.is_encrypted ?? true,
-            fingerprint: r.fingerprint || 'BYG:E2EE:SAFE',
-            avatar: r.avatar || '💬',
-          }));
-          const userRooms = fetchedRooms.filter(
-            (r) => r.participants.includes(currentUser.id) || r.type === 'group'
-          );
-          setRooms(userRooms);
-          if (userRooms.length > 0 && !activeRoomId && window.innerWidth >= 768) {
-            setActiveRoomId(userRooms[0].id);
-          }
-        }
-      };
-
-      fetchSupabaseRooms();
-
-      const channel = supabase
-        .channel('public:rooms')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'rooms' },
-          () => {
-            fetchSupabaseRooms();
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
-
-    // Listen to all rooms where user is participant or type is group (Firestore)
-    const roomsCol = collection(db, 'rooms');
-    const unsubscribe = onSnapshot(roomsCol, (snapshot) => {
-      const fetchedRooms: Room[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: data.id || d.id,
-          name: data.name || 'Canal Cifrado',
-          type: data.type || 'group',
-          participants: data.participants || [],
-          unreadCount: data.unreadCount || 0,
-          isEncrypted: data.isEncrypted ?? true,
-          fingerprint: data.fingerprint || 'BYG:E2EE:SAFE',
-          avatar: data.avatar || '💬',
-        };
-      });
-
-      const userRooms = fetchedRooms.filter(
-        (r) => r.participants.includes(currentUser.id) || r.type === 'group'
-      );
-
-      setRooms(userRooms);
-      if (userRooms.length > 0 && !activeRoomId) {
-        if (window.innerWidth >= 768) {
+    const fetchSupabaseRooms = async () => {
+      const { data, error } = await supabase.from('rooms').select('*');
+      if (!error && data) {
+        const fetchedRooms: Room[] = data.map((r) => ({
+          id: r.id,
+          name: r.name || 'Canal Cifrado',
+          type: r.type || 'group',
+          participants: r.participants || [],
+          unreadCount: r.unread_count || 0,
+          isEncrypted: r.is_encrypted ?? true,
+          fingerprint: r.fingerprint || 'BYG:E2EE:SAFE',
+          avatar: r.avatar || '💬',
+        }));
+        const userRooms = fetchedRooms.filter(
+          (r) => r.participants.includes(currentUser.id) || r.type === 'group'
+        );
+        setRooms(userRooms);
+        if (userRooms.length > 0 && !activeRoomId && window.innerWidth >= 768) {
           setActiveRoomId(userRooms[0].id);
         }
       }
-    });
+    };
 
-    return () => unsubscribe();
+    fetchSupabaseRooms();
+
+    const channel = supabase
+      .channel('public:rooms')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rooms' },
+        () => {
+          fetchSupabaseRooms();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [currentUser?.id]);
 
-  // 4. Real-time Messages sync for activeRoomId (Supabase or Firestore)
+  // 4. Real-time Messages sync for activeRoomId (Supabase)
   useEffect(() => {
-    if (!currentUser || !activeRoomId) return;
+    if (!currentUser || !activeRoomId || !supabase) return;
 
-    if (isSupabaseConfigured && supabase) {
-      const fetchSupabaseMessages = async () => {
-        const { data, error } = await supabase
-          .from('messages')
-          .select('*')
-          .eq('room_id', activeRoomId);
+    const fetchSupabaseMessages = async () => {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('room_id', activeRoomId);
 
-        if (!error && data) {
-          const msgPromises = data.map(async (item) => {
-            let decryptedText = item.text || '';
-            if (item.encrypted_payload && item.encrypted_payload.ciphertext) {
-              try {
-                decryptedText = await decryptText(item.encrypted_payload, activeRoomId);
-              } catch (e) {
-                console.error('Decryption failed for msg:', item.id);
-              }
+      if (!error && data) {
+        const msgPromises = data.map(async (item) => {
+          let decryptedText = item.text || '';
+          if (item.encrypted_payload && item.encrypted_payload.ciphertext) {
+            try {
+              decryptedText = await decryptText(item.encrypted_payload, activeRoomId);
+            } catch (e) {
+              console.error('Decryption failed for msg:', item.id);
             }
+          }
 
-            const msg: Message = {
-              id: item.id,
-              senderId: item.sender_id,
-              receiverId: item.room_id || activeRoomId,
-              text: decryptedText,
-              encryptedPayload: item.encrypted_payload,
-              timestamp: Number(item.timestamp) || Date.now(),
-              status: item.status || 'sent',
-              attachment: item.attachment,
-              isVoiceNote: item.is_voice_note,
-              audioDuration: item.audio_duration,
-            };
-            return msg;
-          });
+          const msg: Message = {
+            id: item.id,
+            senderId: item.sender_id,
+            receiverId: item.room_id || activeRoomId,
+            text: decryptedText,
+            encryptedPayload: item.encrypted_payload,
+            timestamp: Number(item.timestamp) || Date.now(),
+            status: item.status || 'sent',
+            attachment: item.attachment,
+            isVoiceNote: item.is_voice_note,
+            audioDuration: item.audio_duration,
+          };
+          return msg;
+        });
 
-          const processedMsgs = await Promise.all(msgPromises);
-          processedMsgs.sort((a, b) => a.timestamp - b.timestamp);
+        const processedMsgs = await Promise.all(msgPromises);
+        processedMsgs.sort((a, b) => a.timestamp - b.timestamp);
 
-          setRoomMessagesMap((prev) => ({
-            ...prev,
-            [activeRoomId]: processedMsgs,
-          }));
-
-          if (processedMsgs.length > 0) {
-            const lastMsg = processedMsgs[processedMsgs.length - 1];
-            setRooms((prevRooms) =>
-              prevRooms.map((r) =>
-                r.id === activeRoomId ? { ...r, lastMessage: lastMsg } : r
-              )
-            );
+        // Sound effect and notifications for new messages
+        if (initialMsgsLoadedRef.current[activeRoomId] && processedMsgs.length > 0) {
+          const lastMsg = processedMsgs[processedMsgs.length - 1];
+          if (lastMsg.senderId !== currentUser.id) {
+            const prevMsgs = roomMessagesMap[activeRoomId] || [];
+            if (!prevMsgs.some(m => m.id === lastMsg.id)) {
+               soundFx.playMessageReceive();
+               if (document.hidden && Notification.permission === 'granted') {
+                 const room = rooms.find(r => r.id === activeRoomId);
+                 new Notification('BYG CHAT', {
+                   body: `Nuevo mensaje en ${room?.name || 'el chat'}`,
+                   icon: '/svg/logo.svg',
+                 });
+               }
+            }
           }
         }
-      };
+        initialMsgsLoadedRef.current[activeRoomId] = true;
 
-      fetchSupabaseMessages();
+        processedMsgs.forEach(msg => saveMessageLocally({ ...msg, roomId: activeRoomId }));
 
-      const channel = supabase
-        .channel(`public:messages:${activeRoomId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'messages',
-            filter: `room_id=eq.${activeRoomId}`,
-          },
-          () => {
-            fetchSupabaseMessages();
-          }
-        )
-        .subscribe();
+        setRoomMessagesMap((prev) => ({
+          ...prev,
+          [activeRoomId]: processedMsgs,
+        }));
 
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
-
-    const messagesCol = collection(db, 'messages');
-    const q = query(messagesCol, where('roomId', '==', activeRoomId));
-
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const msgPromises = snapshot.docs.map(async (docSnap) => {
-        const data = docSnap.data();
-        let decryptedText = data.text || '';
-
-        if (data.encryptedPayload && data.encryptedPayload.ciphertext) {
-          try {
-            decryptedText = await decryptText(data.encryptedPayload, activeRoomId);
-          } catch (e) {
-            console.error('Decryption failed for msg:', docSnap.id);
-          }
-        }
-
-        const msg: Message = {
-          id: data.id || docSnap.id,
-          senderId: data.senderId,
-          receiverId: data.roomId || activeRoomId,
-          text: decryptedText,
-          encryptedPayload: data.encryptedPayload,
-          timestamp: data.timestamp || Date.now(),
-          status: data.status || 'sent',
-          attachment: data.attachment,
-          isVoiceNote: data.isVoiceNote,
-          audioDuration: data.audioDuration,
-        };
-        return msg;
-      });
-
-      const processedMsgs = await Promise.all(msgPromises);
-      processedMsgs.sort((a, b) => a.timestamp - b.timestamp);
-
-      // Play receive sound for new incoming messages
-      if (initialMsgsLoadedRef.current[activeRoomId] && processedMsgs.length > 0) {
-        const lastMsg = processedMsgs[processedMsgs.length - 1];
-        if (lastMsg.senderId !== currentUser.id) {
-          soundFx.playMessageReceive();
-
-          // Mostrar notificación si la pestaña no está visible
-          if (document.hidden && Notification.permission === 'granted') {
-            const room = rooms.find(r => r.id === activeRoomId);
-            new Notification('BYG CHAT', {
-              body: `Nuevo mensaje en ${room?.name || 'el chat'}`,
-              icon: '/svg/logo.svg',
-            });
+        if (processedMsgs.length > 0) {
+          const lastMsg = processedMsgs[processedMsgs.length - 1];
+          setRooms((prevRooms) =>
+            prevRooms.map((r) =>
+              r.id === activeRoomId ? { ...r, lastMessage: lastMsg } : r
+            )
+          );
+          if (lastMsg.senderId !== currentUser.id) {
+            handleMarkAsRead(activeRoomId);
           }
         }
       }
-      initialMsgsLoadedRef.current[activeRoomId] = true;
+    };
 
-      // Save all fetched messages to local DB for offline access
-      processedMsgs.forEach(msg => saveMessageLocally({ ...msg, roomId: activeRoomId }));
+    fetchSupabaseMessages();
 
-      setRoomMessagesMap((prev) => ({
-        ...prev,
-        [activeRoomId]: processedMsgs,
-      }));
-
-      // Update last message in room list
-      if (processedMsgs.length > 0) {
-        const lastMsg = processedMsgs[processedMsgs.length - 1];
-        setRooms((prevRooms) =>
-          prevRooms.map((r) =>
-            r.id === activeRoomId ? { ...r, lastMessage: lastMsg } : r
-          )
-        );
-
-        // Mark as read if user is in the room and there are new messages
-        if (lastMsg.senderId !== currentUser.id) {
-          handleMarkAsRead(activeRoomId);
+    const channel = supabase
+      .channel(`public:messages:${activeRoomId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'messages',
+          filter: `room_id=eq.${activeRoomId}`,
+        },
+        () => {
+          fetchSupabaseMessages();
         }
-      }
-    });
+      )
+      .subscribe();
 
-    return () => unsubscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [currentUser?.id, activeRoomId]);
 
   // Handle Mark as Read on Room Entry
@@ -502,166 +377,147 @@ export default function App() {
     }
   }, [activeRoomId, currentUser?.id]);
 
-  // 5. Setup WebSocket connection for signaling/presence
+  // 5. Setup Supabase Realtime for signaling/presence
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !supabase) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
-    const socket = new WebSocket(wsUrl);
-    wsRef.current = socket;
-
-    socket.onopen = () => {
-      setIsWsConnected(true);
-      socket.send(
-        JSON.stringify({
-          type: 'user:join',
-          userId: currentUser.id,
-          userName: currentUser.name,
-          avatar: currentUser.avatar,
-        })
-      );
-    };
-
-    socket.onmessage = async (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        switch (data.type) {
-          case 'presence:update':
-            setOnlineUsers(data.onlineUsers || []);
-            break;
-
-          case 'call:initiate': {
-            soundFx.startIncomingCallRing();
-            setCallState({
-              active: true,
-              callId: 'call_' + Date.now(),
-              peerId: data.senderId,
-              peerName: 'Contacto BYG',
-              peerAvatar:
-                'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-              status: 'incoming',
-              isMuted: false,
-              isSpeaker: true,
-              startTime: null,
-              audioLevel: 0,
-              isVoiceOnly: true,
-              signalQuality: 'connecting',
-            });
-            break;
-          }
-
-          case 'call:accept': {
-            soundFx.stopAllRings();
-            setCallState((prev) => ({
-              ...prev,
-              status: 'connected',
-              startTime: Date.now(),
-            }));
-            break;
-          }
-
-          case 'call:reject':
-          case 'call:end': {
-            soundFx.playCallEnd();
-            cleanupWebRTC();
-            setCallState((prev) => ({
-              ...prev,
-              status: 'ended',
-            }));
-            setTimeout(() => {
-              setCallState({
-                active: false,
-                callId: null,
-                peerId: null,
-                peerName: '',
-                peerAvatar: '',
-                status: 'idle',
-                isMuted: false,
-                isSpeaker: true,
-                startTime: null,
-                audioLevel: 0,
-                isVoiceOnly: true,
-                signalQuality: 'none',
-              });
-            }, 800);
-            break;
-          }
-
-          case 'typing:update':
-            setTypingUsers(prev => ({
-              ...prev,
-              [data.payload.roomId]: data.payload.users
-            }));
-            break;
-
-          case 'message:delete': {
-            const { messageId, roomId } = data.payload;
-            if (roomId === activeRoomId) {
-              setRoomMessagesMap(prev => {
-                const currentMsgs = prev[roomId] || [];
-                return {
-                  ...prev,
-                  [roomId]: currentMsgs.filter(m => m.id !== messageId)
-                };
-              });
-              deleteMessageLocally(messageId);
-            }
-            break;
-          }
-
-          case 'message:read': {
-            const { roomId, userId } = data.payload;
-            // Update local state to reflect read status
-            setRoomMessagesMap(prev => {
-              const msgs = prev[roomId] || [];
-              const updatedMsgs = msgs.map(m => 
-                (m.senderId !== userId) ? { ...m, status: 'read' as const } : m
-              );
-              return { ...prev, [roomId]: updatedMsgs };
-            });
-            break;
-          }
-
-          case 'webrtc:offer':
-            handleReceiveOffer(data.senderId, data.payload);
-            break;
-
-          case 'webrtc:answer':
-            handleReceiveAnswer(data.payload);
-            break;
-
-          case 'webrtc:ice-candidate':
-            handleReceiveIceCandidate(data.payload);
-            break;
-        }
-      } catch (err) {
-        console.error('Error parsing WS message:', err);
+    const signalingChannel = supabase.channel('byg_signaling', {
+      config: {
+        presence: { key: currentUser.id },
+        broadcast: { self: false }
       }
-    };
+    });
 
-    socket.onclose = () => {
-      setIsWsConnected(false);
-    };
+    signalingChannel
+      .on('presence', { event: 'sync' }, () => {
+        const state = signalingChannel.presenceState();
+        const online: User[] = Object.values(state).flat().map((p: any) => ({
+          id: p.id || p.userId,
+          name: p.name || p.userName,
+          avatar: p.avatar,
+          status: 'online',
+        }));
+        setOnlineUsers(online);
+      })
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        setTypingUsers(prev => ({
+          ...prev,
+          [payload.roomId]: payload.users
+        }));
+      })
+      .on('broadcast', { event: 'call_initiate' }, ({ payload }) => {
+        if (payload.targetId === currentUser.id || payload.roomId === activeRoomId) {
+          soundFx.startIncomingCallRing();
+          setCallState({
+            active: true,
+            callId: payload.callId,
+            peerId: payload.senderId,
+            peerName: payload.senderName || 'Contacto BYG',
+            peerAvatar: payload.senderAvatar || '💬',
+            status: 'incoming',
+            isMuted: false,
+            isSpeaker: true,
+            startTime: null,
+            audioLevel: 0,
+            isVoiceOnly: true,
+            signalQuality: 'connecting',
+          });
+        }
+      })
+      .on('broadcast', { event: 'call_accept' }, ({ payload }) => {
+        if (payload.callId === callState.callId || payload.targetId === currentUser.id) {
+          soundFx.stopAllRings();
+          setCallState(prev => ({ ...prev, status: 'connected', startTime: Date.now() }));
+        }
+      })
+      .on('broadcast', { event: 'call_reject' }, ({ payload }) => {
+        if (payload.callId === callState.callId) {
+          soundFx.playCallEnd();
+          cleanupWebRTC();
+          setCallState(prev => ({ ...prev, status: 'ended' }));
+          setTimeout(() => resetCallState(), 800);
+        }
+      })
+      .on('broadcast', { event: 'call_end' }, ({ payload }) => {
+        if (payload.callId === callState.callId) {
+          soundFx.playCallEnd();
+          cleanupWebRTC();
+          setCallState(prev => ({ ...prev, status: 'ended' }));
+          setTimeout(() => resetCallState(), 800);
+        }
+      })
+      .on('broadcast', { event: 'webrtc_offer' }, ({ payload }) => {
+        if (payload.targetId === currentUser.id) {
+          handleReceiveOffer(payload.senderId, payload.offer);
+        }
+      })
+      .on('broadcast', { event: 'webrtc_answer' }, ({ payload }) => {
+        if (payload.targetId === currentUser.id) {
+          handleReceiveAnswer(payload.answer);
+        }
+      })
+      .on('broadcast', { event: 'webrtc_ice' }, ({ payload }) => {
+        if (payload.targetId === currentUser.id) {
+          handleReceiveIceCandidate(payload.candidate);
+        }
+      })
+      .on('broadcast', { event: 'message_read' }, ({ payload }) => {
+         const { roomId, userId } = payload;
+         setRoomMessagesMap(prev => {
+            const msgs = prev[roomId] || [];
+            const updatedMsgs = msgs.map(m => 
+               (m.senderId !== userId) ? { ...m, status: 'read' as const } : m
+            );
+            return { ...prev, [roomId]: updatedMsgs };
+         });
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await signalingChannel.track({
+            id: currentUser.id,
+            name: currentUser.name,
+            avatar: currentUser.avatar,
+            online_at: new Date().toISOString(),
+          });
+          setIsWsConnected(true);
+        }
+      });
+
+    // Helper to store channel in ref if needed
+    (window as any).signalingChannel = signalingChannel;
 
     return () => {
-      socket.close();
+      supabase.removeChannel(signalingChannel);
+      setIsWsConnected(false);
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, activeRoomId, callState.callId]);
+
+  const resetCallState = () => {
+    setCallState({
+      active: false,
+      callId: null,
+      peerId: null,
+      peerName: '',
+      peerAvatar: '',
+      status: 'idle',
+      isMuted: false,
+      isSpeaker: true,
+      startTime: null,
+      audioLevel: 0,
+      isVoiceOnly: true,
+      signalQuality: 'none',
+    });
+  };
 
   // Auth logout handler
   const handleLogout = async () => {
-    try {
-      await signOut(auth);
-    } catch (e) {
-      console.error('Error signing out:', e);
+    if (supabase) {
+      await supabase.auth.signOut();
     }
     localStorage.removeItem('byg_chat_token');
     localStorage.removeItem('byg_chat_user');
     setCurrentUser(null);
     setToken(null);
-    if (wsRef.current) wsRef.current.close();
   };
 
   // Auth login/register success
@@ -670,9 +526,9 @@ export default function App() {
     setToken(userToken);
   };
 
-  // Handle Sending Encrypted Message to Firestore
+  // Handle Sending Encrypted Message to Supabase
   const handleSendMessage = async (text: string, attachment?: Attachment) => {
-    if (!activeRoomId || !currentUser) return;
+    if (!activeRoomId || !currentUser || !supabase) return;
 
     const encryptedPayload = await encryptText(text, activeRoomId);
 
@@ -691,49 +547,26 @@ export default function App() {
     // Save locally immediately for offline sync
     saveMessageLocally({ ...newMsg, roomId: activeRoomId });
 
-    // Save message to Supabase or Firestore
+    // Save message to Supabase
     try {
-      if (isSupabaseConfigured && supabase) {
-        await supabase.from('messages').insert({
-          id: msgId,
-          room_id: activeRoomId,
-          sender_id: currentUser.id,
-          receiver_id: activeRoomId,
-          text,
-          encrypted_payload: encryptedPayload,
-          timestamp: Date.now(),
-          status: 'sent',
-          attachment: attachment || null,
-        });
-      } else {
-        await addDoc(collection(db, 'messages'), {
-          id: msgId,
-          roomId: activeRoomId,
-          senderId: currentUser.id,
-          receiverId: activeRoomId,
-          text,
-          encryptedPayload,
-          timestamp: Date.now(),
-          status: 'sent',
-          attachment: attachment || null,
-        });
-      }
+      await supabase.from('messages').insert({
+        id: msgId,
+        room_id: activeRoomId,
+        sender_id: currentUser.id,
+        receiver_id: activeRoomId,
+        text,
+        encrypted_payload: encryptedPayload,
+        timestamp: Date.now(),
+        status: 'sent',
+        attachment: attachment || null,
+      });
     } catch (e) {
       console.error('Error saving message:', e);
-    }
-
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'message:send',
-          payload: newMsg,
-        })
-      );
     }
   };
 
   const handleDeleteMessage = async (messageId: string) => {
-    if (!activeRoomId || !currentUser) return;
+    if (!activeRoomId || !currentUser || !supabase) return;
 
     // 1. Update Local UI immediately
     setRoomMessagesMap(prev => {
@@ -747,65 +580,45 @@ export default function App() {
     // 2. Delete from Local DB
     await deleteMessageLocally(messageId);
 
-    // 3. Delete from Central DB (Firestore)
+    // 3. Delete from Supabase
     try {
-      // Find the document with the matching message id property
-      const q = query(collection(db, 'messages'), where('id', '==', messageId));
-      const querySnapshot = await getDocs(q);
-      querySnapshot.forEach(async (docSnap) => {
-        await deleteDoc(doc(db, 'messages', docSnap.id));
-      });
+      await supabase.from('messages').delete().eq('id', messageId);
     } catch (e) {
-      console.error('Error deleting message from Firestore:', e);
-    }
-
-    // 4. Notify via WebSocket for real-time sync with others
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'message:delete',
-          payload: { messageId, roomId: activeRoomId },
-        })
-      );
+      console.error('Error deleting message from Supabase:', e);
     }
   };
 
   const handleMarkAsRead = async (roomId: string) => {
-    if (!currentUser || !roomId) return;
+    if (!currentUser || !roomId || !supabase) return;
 
     try {
-      // 1. Update Firestore
-      const q = query(
-        collection(db, 'messages'),
-        where('roomId', '==', roomId),
-        where('senderId', '!=', currentUser.id),
-        where('status', '==', 'sent')
-      );
-      const snapshot = await getDocs(q);
+      // 1. Update Supabase
+      const { error } = await supabase
+        .from('messages')
+        .update({ status: 'read' })
+        .eq('room_id', roomId)
+        .neq('sender_id', currentUser.id)
+        .eq('status', 'sent');
       
-      if (snapshot.empty) return;
+      if (error) return;
 
-      const batch = snapshot.docs.map(docSnap => {
-        const docRef = doc(db, 'messages', docSnap.id);
-        return updateDoc(docRef, { status: 'read' });
-      });
-      await Promise.all(batch);
-
-      // 2. Notify via WebSocket
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'message:read',
+      // 2. Notify via broadcast
+      const channel = (window as any).signalingChannel;
+      if (channel) {
+        channel.send({
+          type: 'broadcast',
+          event: 'message_read',
           payload: { roomId, userId: currentUser.id }
-        }));
+        });
       }
     } catch (err) {
       console.error('Error marking messages as read:', err);
     }
   };
 
-  // Handle Sending Encrypted Voice Note to Firestore
+  // Handle Sending Encrypted Voice Note to Supabase
   const handleSendVoiceNote = async (audioBlob: Blob, duration: number) => {
-    if (!activeRoomId || !currentUser) return;
+    if (!activeRoomId || !currentUser || !supabase) return;
 
     const audioUrl = URL.createObjectURL(audioBlob);
     const audioFile = new File([audioBlob], `voice_note_${Date.now()}.webm`, { type: 'audio/webm' });
@@ -826,60 +639,23 @@ export default function App() {
     const encryptedPayload = await encryptText(text, activeRoomId);
 
     const msgId = 'msg_voice_' + Date.now();
-    const newMsg: Message = {
-      id: msgId,
-      senderId: currentUser.id,
-      receiverId: activeRoomId,
-      text,
-      encryptedPayload,
-      timestamp: Date.now(),
-      status: 'sent',
-      attachment,
-      isVoiceNote: true,
-      audioDuration: duration,
-    };
-
+    
     try {
-      if (isSupabaseConfigured && supabase) {
-        await supabase.from('messages').insert({
-          id: msgId,
-          room_id: activeRoomId,
-          sender_id: currentUser.id,
-          receiver_id: activeRoomId,
-          text,
-          encrypted_payload: encryptedPayload,
-          timestamp: Date.now(),
-          status: 'sent',
-          attachment,
-          is_voice_note: true,
-          audio_duration: duration,
-        });
-      } else {
-        await addDoc(collection(db, 'messages'), {
-          id: msgId,
-          roomId: activeRoomId,
-          senderId: currentUser.id,
-          receiverId: activeRoomId,
-          text,
-          encryptedPayload,
-          timestamp: Date.now(),
-          status: 'sent',
-          attachment,
-          isVoiceNote: true,
-          audioDuration: duration,
-        });
-      }
+      await supabase.from('messages').insert({
+        id: msgId,
+        room_id: activeRoomId,
+        sender_id: currentUser.id,
+        receiver_id: activeRoomId,
+        text,
+        encrypted_payload: encryptedPayload,
+        timestamp: Date.now(),
+        status: 'sent',
+        attachment,
+        is_voice_note: true,
+        audio_duration: duration,
+      });
     } catch (e) {
       console.error('Error saving voice note:', e);
-    }
-
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'message:send',
-          payload: newMsg,
-        })
-      );
     }
   };
 
@@ -905,38 +681,16 @@ export default function App() {
     };
 
     try {
-      if (isSupabaseConfigured && supabase) {
-        await supabase.from('messages').insert({
-          id: msgId,
-          room_id: roomId,
-          sender_id: currentUser.id,
-          receiver_id: roomId,
-          text,
-          encrypted_payload: encryptedPayload,
-          timestamp: Date.now(),
-          status: 'sent',
-        });
-      } else {
-        await addDoc(collection(db, 'messages'), {
-          id: msgId,
-          roomId: roomId,
-          senderId: currentUser.id,
-          receiverId: roomId,
-          text,
-          encryptedPayload,
-          timestamp: Date.now(),
-          status: 'sent',
-        });
-      }
-
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'message:send',
-            payload: newMsg,
-          })
-        );
-      }
+      await supabase.from('messages').insert({
+        id: msgId,
+        room_id: roomId,
+        sender_id: currentUser.id,
+        receiver_id: roomId,
+        text,
+        encrypted_payload: encryptedPayload,
+        timestamp: Date.now(),
+        status: 'sent',
+      });
     } catch (e) {
       console.error('Error logging call message:', e);
     }
@@ -957,17 +711,18 @@ export default function App() {
   }, [activeRoomId]);
   const handleStartVoiceCall = () => {
     const activeRoom = rooms.find((r) => r.id === activeRoomId);
+    if (!activeRoom || !currentUser || !supabase) return;
 
     soundFx.startOutgoingCallRing();
     logCallMessage('started', activeRoomId!);
+    
+    const callId = 'call_' + Date.now();
     setCallState({
       active: true,
-      callId: 'call_' + Date.now(),
-      peerId: activeRoom?.id || 'peer',
-      peerName: activeRoom?.name || 'Contacto BYG',
-      peerAvatar:
-        activeRoom?.avatar ||
-        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+      callId,
+      peerId: activeRoom.id,
+      peerName: activeRoom.name,
+      peerAvatar: activeRoom.avatar || '💬',
       status: 'calling',
       isMuted: false,
       isSpeaker: true,
@@ -977,17 +732,25 @@ export default function App() {
       signalQuality: 'connecting',
     });
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'call:initiate',
-          payload: { roomId: activeRoomId },
-        })
-      );
+    const channel = (window as any).signalingChannel;
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'call_initiate',
+        payload: { 
+          callId,
+          roomId: activeRoomId,
+          senderId: currentUser.id,
+          senderName: currentUser.name,
+          senderAvatar: currentUser.avatar,
+          targetId: activeRoom.type === 'direct' ? activeRoom.participants.find(p => p !== currentUser.id) : null
+        },
+      });
     }
   };
 
   const handleAcceptCall = async () => {
+    if (!currentUser || !supabase) return;
     soundFx.stopAllRings();
     setCallState((prev) => ({
       ...prev,
@@ -999,13 +762,16 @@ export default function App() {
       await setupWebRTC(callState.peerId, true);
     }
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'call:accept',
-          payload: { callId: callState.callId },
-        })
-      );
+    const channel = (window as any).signalingChannel;
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'call_accept',
+        payload: { 
+          callId: callState.callId,
+          targetId: callState.peerId
+        },
+      });
     }
   };
 
@@ -1014,30 +780,16 @@ export default function App() {
     logCallMessage('missed', activeRoomId!);
     cleanupWebRTC();
     setCallState((prev) => ({ ...prev, status: 'ended' }));
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'call:reject',
-          payload: { callId: callState.callId },
-        })
-      );
-    }
-    setTimeout(() => {
-      setCallState({
-        active: false,
-        callId: null,
-        peerId: null,
-        peerName: '',
-        peerAvatar: '',
-        status: 'idle',
-        isMuted: false,
-        isSpeaker: true,
-        startTime: null,
-        audioLevel: 0,
-        isVoiceOnly: true,
-        signalQuality: 'none',
+    
+    const channel = (window as any).signalingChannel;
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'call_reject',
+        payload: { callId: callState.callId, targetId: callState.peerId },
       });
-    }, 500);
+    }
+    setTimeout(() => resetCallState(), 500);
   };
 
   const handleEndCall = () => {
@@ -1045,33 +797,19 @@ export default function App() {
     logCallMessage('ended', activeRoomId!);
     cleanupWebRTC();
     setCallState((prev) => ({ ...prev, status: 'ended' }));
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'call:end',
-          payload: { callId: callState.callId },
-        })
-      );
-    }
-    setTimeout(() => {
-      setCallState({
-        active: false,
-        callId: null,
-        peerId: null,
-        peerName: '',
-        peerAvatar: '',
-        status: 'idle',
-        isMuted: false,
-        isSpeaker: true,
-        startTime: null,
-        audioLevel: 0,
-        isVoiceOnly: true,
-        signalQuality: 'none',
+    
+    const channel = (window as any).signalingChannel;
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'call_end',
+        payload: { callId: callState.callId, targetId: callState.peerId },
       });
-    }, 500);
+    }
+    setTimeout(() => resetCallState(), 500);
   };
 
-  // WebRTC Signal Handlers
+  // WebRTC Signal Handlers via Supabase
   const setupWebRTC = async (targetId: string, isInitiator: boolean) => {
     cleanupWebRTC();
     const pc = new RTCPeerConnection({
@@ -1080,52 +818,29 @@ export default function App() {
     peerConnectionRef.current = pc;
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && wsRef.current) {
-        wsRef.current.send(JSON.stringify({
-          type: 'webrtc:ice-candidate',
-          targetUserId: targetId,
-          payload: event.candidate
-        }));
+      if (event.candidate) {
+        const channel = (window as any).signalingChannel;
+        if (channel) {
+          channel.send({
+            type: 'broadcast',
+            event: 'webrtc_ice',
+            payload: {
+              targetId,
+              candidate: event.candidate
+            }
+          });
+        }
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      console.log(`ICE Connection State: ${state}`);
-
       let quality: any = 'none';
       if (state === 'checking' || state === 'new') quality = 'connecting';
       if (state === 'connected' || state === 'completed') quality = 'stable';
       if (state === 'disconnected') quality = 'weak';
       if (state === 'failed' || state === 'closed') quality = 'none';
-
       setCallState(prev => ({ ...prev, signalQuality: quality }));
-
-      if (state === 'failed' || state === 'disconnected') {
-        if (isInitiator) {
-          console.warn('ICE Connection failed, triggering restart...');
-          triggerICERestart(targetId);
-        }
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      const state = pc.connectionState;
-      console.log(`Peer Connection State: ${state}`);
-
-      let quality: any = 'none';
-      if (state === 'connecting') quality = 'connecting';
-      if (state === 'connected') quality = 'stable';
-      if (state === 'failed' || state === 'closed') quality = 'none';
-      if (state === 'disconnected') quality = 'weak';
-
-      setCallState(prev => ({ ...prev, signalQuality: quality }));
-
-      if (state === 'failed') {
-        if (isInitiator) {
-          triggerICERestart(targetId);
-        }
-      }
     };
 
     pc.ontrack = (event) => {
@@ -1143,32 +858,21 @@ export default function App() {
       if (isInitiator) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        wsRef.current?.send(JSON.stringify({
-          type: 'webrtc:offer',
-          targetUserId: targetId,
-          payload: offer
-        }));
+        const channel = (window as any).signalingChannel;
+        if (channel) {
+          channel.send({
+            type: 'broadcast',
+            event: 'webrtc_offer',
+            payload: {
+              targetId,
+              senderId: currentUser?.id,
+              offer
+            }
+          });
+        }
       }
     } catch (err) {
       console.error('WebRTC error:', err);
-    }
-  };
-
-  const triggerICERestart = async (targetId: string) => {
-    const pc = peerConnectionRef.current;
-    if (!pc || !wsRef.current) return;
-
-    try {
-      const offer = await pc.createOffer({ iceRestart: true });
-      await pc.setLocalDescription(offer);
-      wsRef.current.send(JSON.stringify({
-        type: 'webrtc:offer',
-        targetUserId: targetId,
-        payload: offer
-      }));
-      console.log('ICE Restart offer sent');
-    } catch (err) {
-      console.error('ICE Restart failed:', err);
     }
   };
 
@@ -1178,11 +882,17 @@ export default function App() {
       await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
-      wsRef.current?.send(JSON.stringify({
-        type: 'webrtc:answer',
-        targetUserId: senderId,
-        payload: answer
-      }));
+      const channel = (window as any).signalingChannel;
+      if (channel) {
+        channel.send({
+          type: 'broadcast',
+          event: 'webrtc_answer',
+          payload: {
+            targetId: senderId,
+            answer
+          }
+        });
+      }
     }
   };
 
@@ -1206,50 +916,34 @@ export default function App() {
     remoteStreamRef.current = null;
   };
 
-  // Create Group in Supabase or Firestore
+  // Create Group in Supabase
   const handleCreateGroup = async (groupName: string) => {
-    if (!currentUser) return;
+    if (!currentUser || !supabase) return;
 
     try {
       const roomId = `room_group_${Date.now()}`;
       const hexRandom = Math.random().toString(36).substring(2, 10).toUpperCase();
 
-      const newRoom = {
+      await supabase.from('rooms').insert({
         id: roomId,
         name: groupName.trim(),
-        type: 'group' as const,
+        type: 'group',
         participants: [currentUser.id],
-        unreadCount: 0,
-        isEncrypted: true,
+        unread_count: 0,
+        is_encrypted: true,
         fingerprint: `GRP:${hexRandom}:E2EE:SAFE`,
         avatar: '👥',
-        createdAt: Date.now(),
-      };
-
-      if (isSupabaseConfigured && supabase) {
-        await supabase.from('rooms').insert({
-          id: roomId,
-          name: groupName.trim(),
-          type: 'group',
-          participants: [currentUser.id],
-          unread_count: 0,
-          is_encrypted: true,
-          fingerprint: `GRP:${hexRandom}:E2EE:SAFE`,
-          avatar: '👥',
-          created_at: Date.now(),
-        });
-      } else {
-        await setDoc(doc(db, 'rooms', roomId), newRoom);
-      }
+        created_at: Date.now(),
+      });
       setActiveRoomId(roomId);
     } catch (e) {
       console.error('Error creating group:', e);
     }
   };
 
-  // Direct chat selection from User Directory in Supabase or Firestore
+  // Direct chat selection from User Directory in Supabase
   const handleSelectUserFromDirectory = async (targetUser: User) => {
-    if (!currentUser) return;
+    if (!currentUser || !supabase) return;
 
     try {
       const existingRoom = rooms.find(
@@ -1265,33 +959,17 @@ export default function App() {
       }
 
       const roomId = `room_direct_${Date.now()}`;
-      const directRoom = {
+      await supabase.from('rooms').insert({
         id: roomId,
         name: targetUser.name,
-        type: 'direct' as const,
+        type: 'direct',
         participants: [currentUser.id, targetUser.id],
-        unreadCount: 0,
-        isEncrypted: true,
+        unread_count: 0,
+        is_encrypted: true,
         fingerprint: targetUser.fingerprint || 'BYG:SAFE:2026:DIRECT',
         avatar: targetUser.avatar || '💬',
-        createdAt: Date.now(),
-      };
-
-      if (isSupabaseConfigured && supabase) {
-        await supabase.from('rooms').insert({
-          id: roomId,
-          name: targetUser.name,
-          type: 'direct',
-          participants: [currentUser.id, targetUser.id],
-          unread_count: 0,
-          is_encrypted: true,
-          fingerprint: targetUser.fingerprint || 'BYG:SAFE:2026:DIRECT',
-          avatar: targetUser.avatar || '💬',
-          created_at: Date.now(),
-        });
-      } else {
-        await setDoc(doc(db, 'rooms', roomId), directRoom);
-      }
+        created_at: Date.now(),
+      });
       setActiveRoomId(roomId);
     } catch (e) {
       console.error('Error opening direct chat room:', e);
@@ -1299,7 +977,7 @@ export default function App() {
   };
 
   const handleUpdateProfile = async (updatedData: { name: string; avatar: string; bio: string; status: UserStatus }) => {
-    if (!currentUser) return;
+    if (!currentUser || !supabase) return;
 
     const updatedUser: User = {
       ...currentUser,
@@ -1313,36 +991,14 @@ export default function App() {
     localStorage.setItem('byg_chat_user', JSON.stringify(updatedUser));
 
     try {
-      const userDocRef = doc(db, 'users', currentUser.id);
-      await setDoc(
-        userDocRef,
-        {
-          name: updatedData.name,
-          avatar: updatedData.avatar,
-          bio: updatedData.bio,
-          status: updatedData.status,
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      );
+      await supabase.from('users').update({
+        name: updatedData.name,
+        avatar: updatedData.avatar,
+        bio: updatedData.bio,
+        status: updatedData.status,
+      }).eq('id', currentUser.id);
     } catch (e) {
-      console.error('Error actualizando Firestore profile:', e);
-    }
-
-    try {
-      await fetch('/api/users/profile', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: currentUser.id,
-          name: updatedData.name,
-          avatar: updatedData.avatar,
-          bio: updatedData.bio,
-          status: updatedData.status,
-        }),
-      });
-    } catch (e) {
-      console.error('Error actualizando REST API profile:', e);
+      console.error('Error actualizando Supabase profile:', e);
     }
   };
 
@@ -1353,6 +1009,8 @@ export default function App() {
       return;
     }
 
+    if (!supabase) return;
+
     const userId = targetUserOrId;
     const foundInOnline = onlineUsers.find((u) => u.id === userId);
     if (foundInOnline) {
@@ -1362,17 +1020,16 @@ export default function App() {
     }
 
     try {
-      const docSnap = await getDoc(doc(db, 'users', userId));
-      if (docSnap.exists()) {
-        const d = docSnap.data();
+      const { data: profile } = await supabase.from('users').select('*').eq('id', userId).single();
+      if (profile) {
         setProfileTargetUser({
           id: userId,
-          name: d.name || nameHint || 'Usuario BYG',
-          avatar: d.avatar || '😎',
-          status: d.status || 'online',
-          bio: d.bio || '',
-          xaonId: formatXaonDisplay(d.xaonId, userId),
-          fingerprint: d.fingerprint || 'BYG:SAFE:2026:USER',
+          name: profile.name || nameHint || 'Usuario BYG',
+          avatar: profile.avatar || '😎',
+          status: profile.status || 'online',
+          bio: profile.bio || '',
+          xaonId: formatXaonDisplay(profile.xaon_id || profile.xaonId, userId),
+          fingerprint: profile.fingerprint || 'BYG:SAFE:2026:USER',
         });
       } else {
         setProfileTargetUser({
