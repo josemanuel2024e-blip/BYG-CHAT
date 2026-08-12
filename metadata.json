@@ -1,0 +1,6 @@
+{
+  "name": "BYG CHAT",
+  "description": "Servicio de mensajería cifrada de extremo a extremo (E2EE), llamadas de voz en tiempo real y transferencia de archivos multimedia.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
