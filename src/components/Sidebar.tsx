@@ -13,6 +13,7 @@ interface SidebarProps {
   onOpenDirectory: () => void;
   onlineUsers: User[];
   userFingerprint: string;
+  className?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -21,6 +22,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectRoom,
   onNewGroup,
   onOpenDirectory,
+  onlineUsers,
+  userFingerprint,
+  className = '',
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -53,7 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   });
 
   return (
-    <aside className="w-full md:w-80 lg:w-88 bg-[#111111] border-b sm:border border-zinc-800 sm:rounded-3xl flex flex-col h-full shrink-0 overflow-hidden shadow-2xl relative">
+    <aside className={`w-full md:w-88 lg:w-96 bg-[#111111] border-r border-zinc-800 flex flex-col h-full shrink-0 overflow-hidden shadow-2xl relative ${className}`}>
       {/* Sidebar Header & Controls */}
       <div className="p-4 space-y-3 border-b border-zinc-800/80">
         <div className="flex items-center justify-between">

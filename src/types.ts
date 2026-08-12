@@ -35,6 +35,7 @@ export interface Message {
   id: string;
   senderId: string;
   receiverId: string; // user ID or room ID
+  roomId?: string; // Room context for local storage
   text: string;
   encryptedPayload: EncryptedPayload;
   timestamp: number;
@@ -75,4 +76,13 @@ export interface KeyVaultInfo {
   fingerprint: string;
   createdAt: number;
   algorithm: string;
+}
+
+export interface UserSettings {
+  theme: 'dark' | 'light' | 'amoled';
+  accentColor: string;
+  fontSize: 'small' | 'medium' | 'large';
+  notificationsEnabled: boolean;
+  soundEnabled: boolean;
+  appPin?: string;
 }

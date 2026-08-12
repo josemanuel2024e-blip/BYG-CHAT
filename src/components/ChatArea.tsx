@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Phone, Shield, Lock, Send, Paperclip, Mic, Play, Pause, FileText, CheckCheck, Eye, EyeOff, Info, ChevronLeft, Hash } from 'lucide-react';
-import { Message, Room, Attachment, User } from '../types';
+import { Phone, Shield, Lock, Send, Paperclip, Mic, Play, Pause, FileText, CheckCheck, Eye, EyeOff, Info, ChevronLeft, Hash, Image, Video, Music, File, Trash2 } from 'lucide-react';
+import { Message, Room, Attachment, User, AttachmentType } from '../types';
 import { VoiceRecorder } from './VoiceRecorder';
 import { MediaUploader } from './MediaUploader';
 import { Avatar } from './Avatar';
 import { formatXaonDisplay } from '../utils/xaon';
+import { soundFx } from '../utils/audioEffects';
 
 interface ChatAreaProps {
   room: Room | null;
@@ -17,6 +18,11 @@ interface ChatAreaProps {
   onOpenMediaViewer: (attachment: Attachment) => void;
   onBackMobile?: () => void;
   onViewUserProfile?: (userId: string, name: string) => void;
+  onDeleteMessage?: (messageId: string) => void;
+  className?: string;
+  typingUsers?: string[];
+  onTypingStart?: () => void;
+  onTypingStop?: () => void;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
@@ -30,19 +36,42 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onOpenMediaViewer,
   onBackMobile,
   onViewUserProfile,
+  onDeleteMessage,
+  className = '',
+  typingUsers = [],
+  onTypingStart,
+  onTypingStop,
 }) => {
   const [textInput, setTextInput] = useState('');
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isTypingRef = useRef(false);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [showUploader, setShowUploader] = useState(false);
+  const [uploaderType, setUploaderType] = useState<AttachmentType | undefined>(undefined);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [rawCipherMap, setRawCipherMap] = useState<Record<string, boolean>>({});
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Close menu on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowAttachMenu(false);
+      }
+    };
+    if (showAttachMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showAttachMenu]);
 
   if (!room) {
     return (
@@ -63,7 +92,34 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (!textInput.trim()) return;
 
     onSendMessage(textInput.trim());
+    soundFx.playMessageSend();
     setTextInput('');
+    
+    if (isTypingRef.current && onTypingStop) {
+      isTypingRef.current = false;
+      onTypingStop();
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setTextInput(e.target.value);
+
+    if (!isTypingRef.current && e.target.value.trim() && onTypingStart) {
+      isTypingRef.current = true;
+      onTypingStart();
+    }
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+    typingTimeoutRef.current = setTimeout(() => {
+      if (isTypingRef.current && onTypingStop) {
+        isTypingRef.current = false;
+        onTypingStop();
+      }
+    }, 3000);
   };
 
   const toggleRawCipher = (msgId: string) => {
@@ -95,11 +151,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleMediaSelected = (attachment: Attachment, rawFile: File) => {
     setShowUploader(false);
+    setUploaderType(undefined);
     onSendMessage(`📎 Archivo adjunto: ${attachment.name}`, attachment);
   };
 
+  const openUploader = (type?: AttachmentType) => {
+    setUploaderType(type);
+    setShowUploader(true);
+    setShowAttachMenu(false);
+  };
+
+  const attachOptions = [
+    { id: 'image', label: 'Fotos', icon: Image, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+    { id: 'video', label: 'Videos', icon: Video, color: 'text-red-400', bg: 'bg-red-500/10' },
+    { id: 'audio', label: 'Música', icon: Music, color: 'text-orange-400', bg: 'bg-orange-500/10' },
+    { id: 'document', label: 'Documentos', icon: FileText, color: 'text-blue-400', bg: 'bg-blue-500/10' },
+  ];
+
   return (
-    <main className="flex-1 bg-[#111111] border-b sm:border border-zinc-800 sm:rounded-3xl flex flex-col h-full relative overflow-hidden shadow-2xl">
+    <main className={`flex-1 bg-[#111111] flex flex-col h-full relative overflow-hidden shadow-2xl ${className}`}>
       {/* Top Bar Header */}
       <div className="px-3 sm:px-6 py-2.5 bg-[#161616] border-b border-zinc-800/80 flex items-center justify-between shrink-0 z-10">
         <div className="flex items-center space-x-2 sm:space-x-3.5 min-w-0">
@@ -133,14 +203,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             />
 
             <div className="min-w-0">
-              <h2 className="text-sm font-bold text-white truncate max-w-[140px] sm:max-w-xs">{room.name}</h2>
-              <div className="flex items-center space-x-1.5 text-[10px]">
-                <span className="text-zinc-400">En línea</span>
-                {room.type === 'direct' && (
-                  <span className="font-mono text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.2 rounded-md font-bold inline-flex items-center space-x-0.5">
-                    <Hash className="w-2.5 h-2.5" />
-                    <span>XAON: {formatXaonDisplay(undefined, room.id)}</span>
+              <div className="flex items-center space-x-2">
+                <h2 className="text-sm font-bold text-white truncate max-w-[140px] sm:max-w-xs">{room.name}</h2>
+                {typingUsers.length > 0 && (
+                  <span className="text-[10px] text-blue-400 font-bold animate-pulse whitespace-nowrap">
+                    escribiendo...
                   </span>
+                )}
+              </div>
+              <div className="flex items-center space-x-1.5 text-[10px]">
+                {typingUsers.length > 0 ? (
+                  <span className="text-blue-400 font-medium truncate">
+                    {typingUsers.join(', ')} {typingUsers.length === 1 ? 'está' : 'están'} escribiendo...
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-zinc-400">En línea</span>
+                    {room.type === 'direct' && (
+                      <span className="font-mono text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.2 rounded-md font-bold inline-flex items-center space-x-0.5">
+                        <Hash className="w-2.5 h-2.5" />
+                        <span>XAON: {formatXaonDisplay(undefined, room.id)}</span>
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -253,6 +338,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     })}
                   </span>
                   {isMe && <CheckCheck className="w-3.5 h-3.5 text-blue-200 inline" />}
+                  {isMe && onDeleteMessage && (
+                    <button
+                      onClick={() => {
+                        if (confirm('¿Eliminar este mensaje?')) {
+                          onDeleteMessage(msg.id);
+                        }
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition-all ml-1"
+                      title="Eliminar mensaje"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -262,12 +360,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       </div>
 
       {/* Input Toolbar - WhatsApp Style Dynamic Mic / Send */}
-      <div className="p-2.5 sm:p-4 bg-[#161616] border-t border-zinc-800 shrink-0">
+      <div className="p-2.5 sm:p-4 bg-[#161616] border-t border-zinc-800 shrink-0 relative">
+        {/* Attachment Sub-menu */}
+        {showAttachMenu && (
+          <div
+            ref={menuRef}
+            className="absolute bottom-20 left-4 bg-[#1a1a1a] border border-zinc-800 rounded-3xl p-2 shadow-2xl animate-in slide-in-from-bottom-4 duration-200 z-30 min-w-[180px]"
+          >
+            <div className="grid grid-cols-1 gap-1">
+              {attachOptions.map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => openUploader(opt.id as AttachmentType)}
+                  className="flex items-center space-x-3 p-3 rounded-2xl hover:bg-[#222222] transition-all group"
+                >
+                  <div className={`p-2 rounded-xl ${opt.bg} ${opt.color} group-hover:scale-110 transition-transform`}>
+                    <opt.icon className="w-5 h-5" />
+                  </div>
+                  <span className="text-sm font-semibold text-zinc-300 group-hover:text-white">{opt.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {isRecordingVoice ? (
           <VoiceRecorder
             onSendVoiceNote={(blob, duration) => {
               setIsRecordingVoice(false);
               onSendVoiceNote(blob, duration);
+              soundFx.playMessageSend();
             }}
             onCancel={() => setIsRecordingVoice(false)}
           />
@@ -275,18 +397,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <form onSubmit={handleSend} className="flex items-center space-x-1.5 sm:space-x-2">
             <button
               type="button"
-              onClick={() => setShowUploader(true)}
-              className="p-2.5 rounded-2xl bg-[#222222] hover:bg-[#2a2a2a] border border-zinc-800 text-zinc-300 hover:text-white transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center active:scale-95 shrink-0"
+              onClick={() => setShowAttachMenu(!showAttachMenu)}
+              className={`p-2.5 rounded-2xl border transition-all min-h-[44px] min-w-[44px] flex items-center justify-center active:scale-95 shrink-0 ${
+                showAttachMenu
+                  ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-600/30'
+                  : 'bg-[#222222] hover:bg-[#2a2a2a] border-zinc-800 text-blue-400'
+              }`}
               title="Adjuntar archivo multimedia cifrado"
             >
-              <Paperclip className="w-5 h-5 text-blue-400" />
+              <Paperclip className="w-5 h-5" />
             </button>
 
             <input
               type="text"
               placeholder="Escribe un mensaje cifrado..."
               value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
+              onChange={handleInputChange}
               className="flex-1 bg-[#111111] border border-zinc-800 rounded-2xl px-3.5 py-2.5 sm:px-4 sm:py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500/50 transition-colors min-h-[44px]"
             />
 
@@ -315,8 +441,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Media Uploader Modal */}
       {showUploader && (
         <MediaUploader
+          initialType={uploaderType}
           onSelectFile={handleMediaSelected}
-          onCancel={() => setShowUploader(false)}
+          onCancel={() => {
+            setShowUploader(false);
+            setUploaderType(undefined);
+          }}
         />
       )}
     </main>

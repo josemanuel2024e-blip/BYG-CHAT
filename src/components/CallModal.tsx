@@ -3,6 +3,7 @@ import { PhoneOff, Mic, MicOff, Volume2, VolumeX, Activity, Hash, PhoneCall } fr
 import { CallState } from '../types';
 import { Avatar } from './Avatar';
 import { formatXaonDisplay } from '../utils/xaon';
+import { soundFx } from '../utils/audioEffects';
 
 interface CallModalProps {
   callState: CallState;
@@ -29,6 +30,7 @@ export const CallModal: React.FC<CallModalProps> = ({
 
   useEffect(() => {
     if (callState.status === 'connected') {
+      soundFx.stopAllRings();
       setDuration(0);
       timerRef.current = setInterval(() => {
         setDuration((prev) => prev + 1);
@@ -41,6 +43,7 @@ export const CallModal: React.FC<CallModalProps> = ({
     }
 
     return () => {
+      soundFx.stopAllRings();
       if (timerRef.current) clearInterval(timerRef.current);
       if (animRef.current) cancelAnimationFrame(animRef.current);
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {

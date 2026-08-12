@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <defs>
+    <linearGradient id="byg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB" />
+      <stop offset="50%" stop-color="#4F46E5" />
+      <stop offset="100%" stop-color="#7C3AED" />
+    </linearGradient>
+    <linearGradient id="shield-glow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#60A5FA" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#2563EB" stop-opacity="0.2" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Outer Shield Frame -->
+  <path d="M50 8L85 22V48C85 69.5 70 88 50 94C30 88 15 69.5 15 48V22L50 8Z" fill="url(#byg-grad)" />
+  <path d="M50 14L79 26V48C79 65.5 66.5 81 50 86.5C33.5 81 21 65.5 21 48V26L50 14Z" fill="#0D0D11" />
+  
+  <!-- Inner Security Keyhole / Chat Bubble -->
+  <path d="M38 36C38 31.5817 41.5817 28 46 28H54C58.4183 28 62 31.5817 62 36V48C62 52.4183 58.4183 56 54 56H48L40 62V55.5C38.8 54.5 38 52.5 38 48V36Z" fill="url(#shield-glow)" />
+  
+  <!-- Lock Shackle -->
+  <path d="M44 38V34C44 30.6863 46.6863 28 50 28C53.3137 28 56 30.6863 56 34V38" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+  
+  <!-- Lock Body -->
+  <rect x="42" y="38" width="16" height="12" rx="3" fill="#FFFFFF" />
+  <circle cx="50" cy="44" r="2" fill="#2563EB" />
+</svg>

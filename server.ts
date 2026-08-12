@@ -97,6 +97,29 @@ roomsStore.set(defaultRoom.id, defaultRoom);
 
 // Active user WebSockets
 const connectedUsers = new Map<string, ClientSocket>();
+const roomTypingUsers = new Map<string, Set<string>>(); // roomId -> Set of userIds
+
+function broadcastTyping(roomId: string) {
+  const typingUserIds = Array.from(roomTypingUsers.get(roomId) || []);
+  const typingUserNames = typingUserIds.map(uid => usersStore.get(uid)?.name || 'Alguien');
+  
+  const payload = JSON.stringify({
+    type: 'typing:update',
+    payload: {
+      roomId,
+      users: typingUserNames
+    }
+  });
+
+  const room = roomsStore.get(roomId);
+  connectedUsers.forEach((client, uid) => {
+    if (client.ws.readyState === WebSocket.OPEN) {
+      if (!room || room.participants.includes(uid) || room.type === 'group') {
+        client.ws.send(payload);
+      }
+    }
+  });
+}
 
 function broadcastPresence() {
   const onlineList = Array.from(usersStore.values()).map((u) => ({
@@ -176,22 +199,87 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
 
+        case 'message:delete': {
+          const { messageId, roomId } = message.payload;
+          const outbound = JSON.stringify({
+            type: 'message:delete',
+            payload: { messageId, roomId },
+          });
+
+          // Relay to participants
+          const targetRoom = roomsStore.get(roomId);
+          connectedUsers.forEach((client, uid) => {
+            if (uid !== currentUserId && client.ws.readyState === WebSocket.OPEN) {
+              if (!targetRoom || targetRoom.participants.includes(uid) || targetRoom.type === 'group') {
+                client.ws.send(outbound);
+              }
+            }
+          });
+          break;
+        }
+
+        case 'device:link': {
+          const { uid, deviceName } = message.payload;
+          console.log(`[AUTH] Linking new device "${deviceName}" for user ${uid}`);
+          // In a real app, this would update a database. For now, we relay the success.
+          const outbound = JSON.stringify({
+            type: 'device:link_success',
+            payload: { deviceName, timestamp: Date.now() },
+          });
+          const client = connectedUsers.get(uid);
+          if (client && client.ws.readyState === WebSocket.OPEN) {
+            client.ws.send(outbound);
+          }
+          break;
+        }
+
         case 'call:initiate':
         case 'call:accept':
         case 'call:reject':
         case 'call:end':
-        case 'call:signal': {
+        case 'call:signal':
+        case 'webrtc:offer':
+        case 'webrtc:answer':
+        case 'webrtc:ice-candidate': {
           const outbound = JSON.stringify({
             type: message.type,
             payload: message.payload,
             senderId: currentUserId,
           });
 
-          connectedUsers.forEach((client, uid) => {
-            if (uid !== currentUserId && client.ws.readyState === WebSocket.OPEN) {
-              client.ws.send(outbound);
+          // If target userId is specified (for WebRTC signaling), send only to them
+          if (message.targetUserId) {
+            const target = connectedUsers.get(message.targetUserId);
+            if (target && target.ws.readyState === WebSocket.OPEN) {
+              target.ws.send(outbound);
             }
-          });
+          } else {
+            // Otherwise broadcast (for backward compatibility with the call system)
+            connectedUsers.forEach((client, uid) => {
+              if (uid !== currentUserId && client.ws.readyState === WebSocket.OPEN) {
+                client.ws.send(outbound);
+              }
+            });
+          }
+          break;
+        }
+
+        case 'typing:start': {
+          const { roomId } = message.payload;
+          if (!roomTypingUsers.has(roomId)) {
+            roomTypingUsers.set(roomId, new Set());
+          }
+          roomTypingUsers.get(roomId)!.add(currentUserId);
+          broadcastTyping(roomId);
+          break;
+        }
+
+        case 'typing:stop': {
+          const { roomId } = message.payload;
+          if (roomTypingUsers.has(roomId)) {
+            roomTypingUsers.get(roomId)!.delete(currentUserId);
+            broadcastTyping(roomId);
+          }
           break;
         }
       }

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Room, Message, CallState, KeyVaultInfo, Attachment, UserStatus } from './types';
 import { getUserKeyVault, encryptText, decryptText, encryptFile } from './utils/crypto';
 import { formatXaonDisplay } from './utils/xaon';
+import { soundFx } from './utils/audioEffects';
+import { saveMessageLocally, getMessagesLocally, deleteMessageLocally } from './utils/localDb';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
@@ -12,6 +14,9 @@ import { NewGroupModal } from './components/NewGroupModal';
 import { AuthModal } from './components/AuthModal';
 import { UserDirectoryModal } from './components/UserDirectoryModal';
 import { ProfileModal } from './components/ProfileModal';
+import { SettingsModal } from './components/SettingsModal';
+import { LockScreen } from './components/LockScreen';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   auth,
   db,
@@ -19,6 +24,7 @@ import {
   signOut,
   collection,
   doc,
+  deleteDoc,
   getDoc,
   setDoc,
   addDoc,
@@ -39,15 +45,40 @@ export default function App() {
   const [roomMessagesMap, setRoomMessagesMap] = useState<Record<string, Message[]>>({});
   const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
+  const [typingUsers, setTypingUsers] = useState<Record<string, string[]>>({}); // roomId -> list of user names
+
+  // WebRTC Refs
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+
+  // User Settings State
+  const [userSettings, setUserSettings] = useState<any>(() => {
+    const saved = localStorage.getItem('byg_chat_settings');
+    return saved ? JSON.parse(saved) : {
+      theme: 'dark',
+      accentColor: '#3b82f6', // Default blue
+      fontSize: 'medium',
+      notificationsEnabled: true,
+      soundEnabled: true,
+      appPin: '1234'
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('byg_chat_settings', JSON.stringify(userSettings));
+  }, [userSettings]);
 
   // Modals state
   const [showSecurityModal, setShowSecurityModal] = useState<boolean>(false);
   const [showNewGroupModal, setShowNewGroupModal] = useState<boolean>(false);
   const [showUserDirectory, setShowUserDirectory] = useState<boolean>(false);
   const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [profileTargetUser, setProfileTargetUser] = useState<User | null>(null);
   const [viewingAttachment, setViewingAttachment] = useState<Attachment | null>(null);
 
+  const initialMsgsLoadedRef = useRef<Record<string, boolean>>({});
   const wsRef = useRef<WebSocket | null>(null);
 
   // Call state
@@ -70,6 +101,49 @@ export default function App() {
     return localStorage.getItem('byg_chat_monochrome') === 'true';
   });
   const [showMonoToast, setShowMonoToast] = useState<boolean>(false);
+
+  // Lock Screen Logic
+  const [isAppLocked, setIsAppLocked] = useState<boolean>(() => {
+    return localStorage.getItem('byg_chat_locked') === 'true';
+  });
+  const lastActivityRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    if (!currentUser || isAppLocked) return;
+
+    const handleActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+
+    window.addEventListener('mousemove', handleActivity);
+    window.addEventListener('keydown', handleActivity);
+    window.addEventListener('mousedown', handleActivity);
+    window.addEventListener('touchstart', handleActivity);
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const diff = now - lastActivityRef.current;
+      if (diff >= 5 * 60 * 1000) { // 5 minutes of inactivity
+        setIsAppLocked(true);
+        localStorage.setItem('byg_chat_locked', 'true');
+        soundFx.playCallEnd(); // Subtle sound cue for lock
+      }
+    }, 10000); // Check every 10 seconds
+
+    return () => {
+      window.removeEventListener('mousemove', handleActivity);
+      window.removeEventListener('keydown', handleActivity);
+      window.removeEventListener('mousedown', handleActivity);
+      window.removeEventListener('touchstart', handleActivity);
+      clearInterval(interval);
+    };
+  }, [isAppLocked, currentUser]);
+
+  const handleUnlock = () => {
+    setIsAppLocked(false);
+    localStorage.setItem('byg_chat_locked', 'false');
+    lastActivityRef.current = Date.now();
+  };
   const activeKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -107,6 +181,11 @@ export default function App() {
 
   // 1. Check Firebase Auth session or localStorage session on startup
   useEffect(() => {
+    // Solicitar permiso para notificaciones web
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
         try {
@@ -369,6 +448,27 @@ export default function App() {
       const processedMsgs = await Promise.all(msgPromises);
       processedMsgs.sort((a, b) => a.timestamp - b.timestamp);
 
+      // Play receive sound for new incoming messages
+      if (initialMsgsLoadedRef.current[activeRoomId] && processedMsgs.length > 0) {
+        const lastMsg = processedMsgs[processedMsgs.length - 1];
+        if (lastMsg.senderId !== currentUser.id) {
+          soundFx.playMessageReceive();
+
+          // Mostrar notificación si la pestaña no está visible
+          if (document.hidden && Notification.permission === 'granted') {
+            const room = rooms.find(r => r.id === activeRoomId);
+            new Notification('BYG CHAT', {
+              body: `Nuevo mensaje en ${room?.name || 'el chat'}`,
+              icon: '/svg/logo.svg',
+            });
+          }
+        }
+      }
+      initialMsgsLoadedRef.current[activeRoomId] = true;
+
+      // Save all fetched messages to local DB for offline access
+      processedMsgs.forEach(msg => saveMessageLocally({ ...msg, roomId: activeRoomId }));
+
       setRoomMessagesMap((prev) => ({
         ...prev,
         [activeRoomId]: processedMsgs,
@@ -419,6 +519,7 @@ export default function App() {
             break;
 
           case 'call:initiate': {
+            soundFx.startIncomingCallRing();
             setCallState({
               active: true,
               callId: 'call_' + Date.now(),
@@ -437,6 +538,7 @@ export default function App() {
           }
 
           case 'call:accept': {
+            soundFx.stopAllRings();
             setCallState((prev) => ({
               ...prev,
               status: 'connected',
@@ -447,6 +549,8 @@ export default function App() {
 
           case 'call:reject':
           case 'call:end': {
+            soundFx.playCallEnd();
+            cleanupWebRTC();
             setCallState((prev) => ({
               ...prev,
               status: 'ended',
@@ -468,6 +572,40 @@ export default function App() {
             }, 800);
             break;
           }
+
+          case 'typing:update':
+            setTypingUsers(prev => ({
+              ...prev,
+              [data.payload.roomId]: data.payload.users
+            }));
+            break;
+
+          case 'message:delete': {
+            const { messageId, roomId } = data.payload;
+            if (roomId === activeRoomId) {
+              setRoomMessagesMap(prev => {
+                const currentMsgs = prev[roomId] || [];
+                return {
+                  ...prev,
+                  [roomId]: currentMsgs.filter(m => m.id !== messageId)
+                };
+              });
+              deleteMessageLocally(messageId);
+            }
+            break;
+          }
+
+          case 'webrtc:offer':
+            handleReceiveOffer(data.senderId, data.payload);
+            break;
+
+          case 'webrtc:answer':
+            handleReceiveAnswer(data.payload);
+            break;
+
+          case 'webrtc:ice-candidate':
+            handleReceiveIceCandidate(data.payload);
+            break;
         }
       } catch (err) {
         console.error('Error parsing WS message:', err);
@@ -521,6 +659,9 @@ export default function App() {
       attachment,
     };
 
+    // Save locally immediately for offline sync
+    saveMessageLocally({ ...newMsg, roomId: activeRoomId });
+
     // Save message to Supabase or Firestore
     try {
       if (isSupabaseConfigured && supabase) {
@@ -557,6 +698,44 @@ export default function App() {
         JSON.stringify({
           type: 'message:send',
           payload: newMsg,
+        })
+      );
+    }
+  };
+
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!activeRoomId || !currentUser) return;
+
+    // 1. Update Local UI immediately
+    setRoomMessagesMap(prev => {
+      const currentMsgs = prev[activeRoomId] || [];
+      return {
+        ...prev,
+        [activeRoomId]: currentMsgs.filter(m => m.id !== messageId)
+      };
+    });
+
+    // 2. Delete from Local DB
+    await deleteMessageLocally(messageId);
+
+    // 3. Delete from Central DB (Firestore)
+    try {
+      // Find the document with the matching message id property
+      const q = query(collection(db, 'messages'), where('id', '==', messageId));
+      const querySnapshot = await getDocs(q);
+      querySnapshot.forEach(async (docSnap) => {
+        await deleteDoc(doc(db, 'messages', docSnap.id));
+      });
+    } catch (e) {
+      console.error('Error deleting message from Firestore:', e);
+    }
+
+    // 4. Notify via WebSocket for real-time sync with others
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'message:delete',
+          payload: { messageId, roomId: activeRoomId },
         })
       );
     }
@@ -642,10 +821,83 @@ export default function App() {
     }
   };
 
-  // Voice Call logic
+  const logCallMessage = async (type: 'started' | 'ended' | 'missed', roomId: string) => {
+    if (!currentUser) return;
+
+    let text = '';
+    if (type === 'started') text = '📞 Llamada de voz iniciada';
+    else if (type === 'ended') text = '🏁 Llamada de voz finalizada';
+    else if (type === 'missed') text = '🚫 Llamada perdida';
+
+    const encryptedPayload = await encryptText(text, roomId);
+    const msgId = 'call_log_' + Date.now();
+
+    const newMsg: Message = {
+      id: msgId,
+      senderId: currentUser.id,
+      receiverId: roomId,
+      text,
+      encryptedPayload,
+      timestamp: Date.now(),
+      status: 'sent',
+    };
+
+    try {
+      if (isSupabaseConfigured && supabase) {
+        await supabase.from('messages').insert({
+          id: msgId,
+          room_id: roomId,
+          sender_id: currentUser.id,
+          receiver_id: roomId,
+          text,
+          encrypted_payload: encryptedPayload,
+          timestamp: Date.now(),
+          status: 'sent',
+        });
+      } else {
+        await addDoc(collection(db, 'messages'), {
+          id: msgId,
+          roomId: roomId,
+          senderId: currentUser.id,
+          receiverId: roomId,
+          text,
+          encryptedPayload,
+          timestamp: Date.now(),
+          status: 'sent',
+        });
+      }
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'message:send',
+            payload: newMsg,
+          })
+        );
+      }
+    } catch (e) {
+      console.error('Error logging call message:', e);
+    }
+  };
+
+  // Load messages from local DB when changing room
+  useEffect(() => {
+    if (activeRoomId) {
+      getMessagesLocally(activeRoomId).then(localMsgs => {
+        if (localMsgs.length > 0) {
+          setRoomMessagesMap(prev => ({
+            ...prev,
+            [activeRoomId]: localMsgs
+          }));
+        }
+      });
+    }
+  }, [activeRoomId]);
   const handleStartVoiceCall = () => {
     const activeRoom = rooms.find((r) => r.id === activeRoomId);
 
+    soundFx.startOutgoingCallRing();
+    logCallMessage('started', activeRoomId!);
     setCallState({
       active: true,
       callId: 'call_' + Date.now(),
@@ -672,12 +924,17 @@ export default function App() {
     }
   };
 
-  const handleAcceptCall = () => {
+  const handleAcceptCall = async () => {
+    soundFx.stopAllRings();
     setCallState((prev) => ({
       ...prev,
       status: 'connected',
       startTime: Date.now(),
     }));
+
+    if (callState.peerId) {
+      await setupWebRTC(callState.peerId, true);
+    }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -690,6 +947,9 @@ export default function App() {
   };
 
   const handleRejectCall = () => {
+    soundFx.playCallEnd();
+    logCallMessage('missed', activeRoomId!);
+    cleanupWebRTC();
     setCallState((prev) => ({ ...prev, status: 'ended' }));
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -717,6 +977,9 @@ export default function App() {
   };
 
   const handleEndCall = () => {
+    soundFx.playCallEnd();
+    logCallMessage('ended', activeRoomId!);
+    cleanupWebRTC();
     setCallState((prev) => ({ ...prev, status: 'ended' }));
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -741,6 +1004,123 @@ export default function App() {
         isVoiceOnly: true,
       });
     }, 500);
+  };
+
+  // WebRTC Signal Handlers
+  const setupWebRTC = async (targetId: string, isInitiator: boolean) => {
+    cleanupWebRTC();
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    peerConnectionRef.current = pc;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current) {
+        wsRef.current.send(JSON.stringify({
+          type: 'webrtc:ice-candidate',
+          targetUserId: targetId,
+          payload: event.candidate
+        }));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      console.log(`ICE Connection State: ${state}`);
+      if (state === 'failed' || state === 'disconnected') {
+        if (isInitiator) {
+          console.warn('ICE Connection failed, triggering restart...');
+          triggerICERestart(targetId);
+        }
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      console.log(`Peer Connection State: ${state}`);
+      if (state === 'failed') {
+        if (isInitiator) {
+          triggerICERestart(targetId);
+        }
+      }
+    };
+
+    pc.ontrack = (event) => {
+      remoteStreamRef.current = event.streams[0];
+      const audio = new Audio();
+      audio.srcObject = remoteStreamRef.current;
+      audio.play().catch(e => console.error('Audio play failed:', e));
+    };
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      if (isInitiator) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        wsRef.current?.send(JSON.stringify({
+          type: 'webrtc:offer',
+          targetUserId: targetId,
+          payload: offer
+        }));
+      }
+    } catch (err) {
+      console.error('WebRTC error:', err);
+    }
+  };
+
+  const triggerICERestart = async (targetId: string) => {
+    const pc = peerConnectionRef.current;
+    if (!pc || !wsRef.current) return;
+
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      wsRef.current.send(JSON.stringify({
+        type: 'webrtc:offer',
+        targetUserId: targetId,
+        payload: offer
+      }));
+      console.log('ICE Restart offer sent');
+    } catch (err) {
+      console.error('ICE Restart failed:', err);
+    }
+  };
+
+  const handleReceiveOffer = async (senderId: string, offer: RTCSessionDescriptionInit) => {
+    await setupWebRTC(senderId, false);
+    if (peerConnectionRef.current) {
+      await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peerConnectionRef.current.createAnswer();
+      await peerConnectionRef.current.setLocalDescription(answer);
+      wsRef.current?.send(JSON.stringify({
+        type: 'webrtc:answer',
+        targetUserId: senderId,
+        payload: answer
+      }));
+    }
+  };
+
+  const handleReceiveAnswer = async (answer: RTCSessionDescriptionInit) => {
+    if (peerConnectionRef.current) {
+      await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+  };
+
+  const handleReceiveIceCandidate = async (candidate: RTCIceCandidateInit) => {
+    if (peerConnectionRef.current) {
+      await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  };
+
+  const cleanupWebRTC = () => {
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    peerConnectionRef.current?.close();
+    peerConnectionRef.current = null;
+    localStreamRef.current = null;
+    remoteStreamRef.current = null;
   };
 
   // Create Group in Supabase or Firestore
@@ -948,8 +1328,26 @@ export default function App() {
   const currentActiveRoom = rooms.find((r) => r.id === activeRoomId) || null;
   const currentMessages = activeRoomId ? roomMessagesMap[activeRoomId] || [] : [];
 
+  const fontSizeClass = {
+    small: 'text-xs',
+    medium: 'text-sm',
+    large: 'text-base'
+  }[userSettings.fontSize as 'small' | 'medium' | 'large'];
+
   return (
-    <div className={`flex flex-col h-[100dvh] w-screen bg-[#050505] font-sans text-zinc-100 p-0 sm:p-3 gap-0 sm:gap-3 overflow-hidden antialiased transition-all duration-300 ${isMonochrome ? 'grayscale contrast-[1.12]' : ''}`}>
+    <div 
+      className={`flex flex-col h-[100dvh] w-screen bg-[#050505] font-sans text-zinc-100 p-0 sm:p-2 lg:p-4 gap-0 sm:gap-2 lg:gap-4 overflow-hidden antialiased transition-all duration-300 ${isMonochrome ? 'grayscale contrast-[1.12]' : ''} ${fontSizeClass}`}
+      style={{ '--accent-color': userSettings.accentColor } as any}
+    >
+      <AnimatePresence>
+        {isAppLocked && currentUser && (
+          <LockScreen 
+            savedPin={userSettings.appPin || '1234'} 
+            onUnlock={handleUnlock} 
+          />
+        )}
+      </AnimatePresence>
+
       {/* Monochrome mode Toast indicator */}
       {showMonoToast && (
         <div className="fixed bottom-6 right-6 z-50 px-4 py-3 bg-[#181818] border border-zinc-700 text-white font-mono text-xs font-bold rounded-2xl shadow-2xl flex items-center space-x-2 animate-bounce">
@@ -978,13 +1376,14 @@ export default function App() {
             setProfileTargetUser(currentUser);
             setShowProfileModal(true);
           }}
+          onOpenSettings={() => setShowSettingsModal(true)}
         />
       </div>
 
       {/* Main Content Area with Mobile Responsiveness */}
-      <div className="flex-1 flex gap-0 sm:gap-3 overflow-hidden relative">
+      <div className="flex-1 flex gap-0 sm:gap-2 lg:gap-4 overflow-hidden relative">
         {/* On mobile: Hide Sidebar when a room is active */}
-        <div className={`h-full w-full md:w-auto ${activeRoomId ? 'hidden md:block' : 'block'}`}>
+        <div className={`h-full w-full md:w-88 lg:w-96 shrink-0 ${activeRoomId ? 'hidden md:block' : 'block'}`}>
           <Sidebar
             rooms={rooms}
             activeRoomId={activeRoomId}
@@ -993,6 +1392,7 @@ export default function App() {
             onOpenDirectory={() => setShowUserDirectory(true)}
             onlineUsers={onlineUsers}
             userFingerprint={currentUser.fingerprint}
+            className="sm:rounded-[2rem] sm:border border-zinc-800"
           />
         </div>
 
@@ -1009,6 +1409,19 @@ export default function App() {
             onOpenMediaViewer={(att) => setViewingAttachment(att)}
             onBackMobile={() => setActiveRoomId('')}
             onViewUserProfile={handleViewUserProfile}
+            onDeleteMessage={handleDeleteMessage}
+            className="sm:rounded-[2rem] sm:border border-zinc-800"
+            typingUsers={typingUsers[activeRoomId] || []}
+            onTypingStart={() => {
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'typing:start', payload: { roomId: activeRoomId } }));
+              }
+            }}
+            onTypingStop={() => {
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'typing:stop', payload: { roomId: activeRoomId } }));
+              }
+            }}
           />
         </div>
       </div>
@@ -1076,6 +1489,15 @@ export default function App() {
         onClose={() => setShowNewGroupModal(false)}
         onCreateGroup={handleCreateGroup}
       />
+
+      {showSettingsModal && (
+        <SettingsModal
+          settings={userSettings}
+          onUpdateSettings={(newSet) => setUserSettings((prev: any) => ({ ...prev, ...newSet }))}
+          onClose={() => setShowSettingsModal(false)}
+          currentUser={currentUser}
+        />
+      )}
     </div>
   );
 }

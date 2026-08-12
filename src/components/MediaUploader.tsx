@@ -1,17 +1,25 @@
 import React, { useRef, useState } from 'react';
-import { Upload, X, ShieldCheck, Lock, FileText } from 'lucide-react';
+import { Upload, X, ShieldCheck, Lock, FileText, Mic } from 'lucide-react';
 import { Attachment, AttachmentType } from '../types';
 
 interface MediaUploaderProps {
   onSelectFile: (attachment: Attachment, rawFile: File) => void;
   onCancel: () => void;
+  initialType?: AttachmentType;
 }
 
-export const MediaUploader: React.FC<MediaUploaderProps> = ({ onSelectFile, onCancel }) => {
+export const MediaUploader: React.FC<MediaUploaderProps> = ({ onSelectFile, onCancel, initialType }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [fileType, setFileType] = useState<AttachmentType>('document');
+  const [fileType, setFileType] = useState<AttachmentType>(initialType || 'document');
+
+  // Trigger file input on mount if initialType is provided
+  React.useEffect(() => {
+    if (initialType && !selectedFile) {
+      fileInputRef.current?.click();
+    }
+  }, [initialType]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -99,6 +107,15 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({ onSelectFile, onCa
               )}
               {fileType === 'video' && previewUrl && (
                 <video src={previewUrl} controls className="max-h-[240px] w-full rounded-xl" />
+              )}
+              {fileType === 'audio' && previewUrl && (
+                <div className="p-8 flex flex-col items-center text-center space-y-4">
+                  <div className="w-16 h-16 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
+                    <Mic className="w-8 h-8" />
+                  </div>
+                  <audio src={previewUrl} controls className="w-full max-w-[240px]" />
+                  <p className="text-xs text-zinc-400 truncate max-w-xs">{selectedFile.name}</p>
+                </div>
               )}
               {fileType === 'document' && (
                 <div className="p-6 flex flex-col items-center text-center space-y-2">

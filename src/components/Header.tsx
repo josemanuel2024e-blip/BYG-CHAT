@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { Shield, LogOut, ChevronLeft, UserCheck, Plus, Hash, Check, Copy } from 'lucide-react';
+import { Shield, LogOut, ChevronLeft, UserCheck, Plus, Hash, Check, Copy, Volume2, VolumeX, Settings } from 'lucide-react';
 import { User, CallState } from '../types';
 import { Avatar } from './Avatar';
 import { formatXaonDisplay } from '../utils/xaon';
+import { soundFx } from '../utils/audioEffects';
+import SVG_PATHS from '../assets/svg';
 
 interface HeaderProps {
   currentUser: User;
@@ -17,6 +19,7 @@ interface HeaderProps {
   onOpenDirectory?: () => void;
   onNewGroup?: () => void;
   onOpenProfile?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -27,8 +30,10 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenDirectory,
   onNewGroup,
   onOpenProfile,
+  onOpenSettings,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(!soundFx.isMuted());
   const userXaon = formatXaonDisplay(currentUser.xaonId, currentUser.id);
 
   const handleCopyXaon = () => {
@@ -37,8 +42,16 @@ export const Header: React.FC<HeaderProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleToggleSound = () => {
+    const enabled = soundFx.toggleSound();
+    setSoundEnabled(enabled);
+    if (enabled) {
+      soundFx.playMessageSend();
+    }
+  };
+
   return (
-    <header className="bg-[#111111] border-b sm:border border-zinc-800 sm:rounded-3xl px-3 sm:px-5 py-2.5 flex items-center justify-between shrink-0 shadow-2xl z-20">
+    <header className="bg-[#111111] border-b border-zinc-800 px-3 sm:px-5 py-2.5 flex items-center justify-between shrink-0 shadow-2xl z-20">
       {/* Left side: Back button on mobile & App Brand */}
       <div className="flex items-center space-x-2.5">
         {showBackMobile && onBackMobile && (
@@ -51,12 +64,14 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        <div className="relative flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30 shrink-0">
-          <Shield className="w-5 h-5 fill-current" />
+        <div className="relative flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30 shrink-0 p-1.5 overflow-hidden">
+          <img src={SVG_PATHS.logo} alt="BYG CHAT Logo" className="w-full h-full object-contain" />
         </div>
 
         <div className="min-w-0">
-          <h1 className="text-sm sm:text-base font-black tracking-wider text-white truncate">BYG CHAT</h1>
+          <h1 className="text-sm sm:text-base font-black tracking-wider text-white truncate flex items-center space-x-1">
+            <span>BYG CHAT</span>
+          </h1>
           <p className="text-[11px] text-zinc-400 hidden sm:block truncate">
             Mensajería y llamadas
           </p>
@@ -65,6 +80,18 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right Controls - Simplified & Merged for Space */}
       <div className="flex items-center space-x-2">
+        {/* Sound FX Toggle Button */}
+        <button
+          onClick={handleToggleSound}
+          className={`p-2 rounded-2xl border transition-all min-h-[42px] min-w-[42px] flex items-center justify-center active:scale-95 ${
+            soundEnabled
+              ? 'bg-blue-600/15 border-blue-500/30 text-blue-400 hover:bg-blue-600/25'
+              : 'bg-[#1a1a1a] border-zinc-800 text-zinc-500 hover:text-zinc-300'
+          }`}
+          title={soundEnabled ? 'Efectos de sonido activados (haz clic para silenciar)' : 'Efectos de sonido desactivados (haz clic para activar)'}
+        >
+          {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+        </button>
         {/* Merged Action Button: Directores y Grupos */}
         {onOpenDirectory && (
           <button
@@ -85,6 +112,16 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Plus className="w-4 h-4 text-blue-400" />
             <span className="hidden md:inline">Nuevo Grupo</span>
+          </button>
+        )}
+
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            className="p-2 rounded-2xl bg-[#1a1a1a] hover:bg-[#252525] border border-zinc-800 text-zinc-400 hover:text-white transition-all min-h-[42px] min-w-[42px] flex items-center justify-center active:scale-95"
+            title="Ajustes Globales"
+          >
+            <Settings className="w-5 h-5" />
           </button>
         )}
 
